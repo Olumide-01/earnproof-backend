@@ -282,6 +282,7 @@ model Proof {
   claim                   ProofClaim?
   verificationEvents      VerificationEvent[]
   anchoringIntents        AnchoringIntent[]
+  disputes                ProofDispute[]
 
   @@index([userId, status])
   @@index([userId, createdAt, id])
@@ -472,4 +473,73 @@ model AuthAuditEvent {
   @@index([walletHash, createdAt])
   @@index([eventType, createdAt])
   @@index([createdAt])
+}
+
+// ─── Proof dispute evidence manifests ─────────────────────────────────────────
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  REJECTED
+}
+
+enum DisputeEvidenceRole {
+  PROOF_OWNER
+  ISSUER
+  ADMIN
+  VERIFIER
+}
+
+/// Off-chain proof dispute with lifecycle management.
+/// Terminal states (RESOLVED, REJECTED) reject new evidence manifests.
+model ProofDispute {
+  id         String        @id @default(cuid())
+  proofId    String
+  proof      Proof         @relation(fields: [proofId], references: [id])
+  status     DisputeStatus @default(OPEN)
+  /// Short reason code — never free-form user input.
+  reason     String
+  /// SHA-256 of the opener's wallet hash — never raw wallet address.
+  openerHash String
+  resolvedAt DateTime?
+  resolution String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  manifests  DisputeEvidenceManifest[]
+
+  @@index([proofId])
+  @@index([status])
+}
+
+/// Versioned evidence manifest for a proof dispute.
+/// Raw evidence is NEVER stored here. Only metadata, canonical hashes,
+/// algorithm identifiers, submitter role, storage references (hashed),
+/// and contract transaction evidence are persisted.
+model DisputeEvidenceManifest {
+  id           String              @id @default(cuid())
+  disputeId    String
+  dispute      ProofDispute        @relation(fields: [disputeId], references: [id])
+  /// Manifest schema version, e.g. "earnproof.dispute-manifest.v1".
+  version      String
+  /// Stable SHA-256 hex digest of the canonical JSON manifest body.
+  manifestHash String              @unique
+  /// Role of the party submitting this manifest.
+  submitterRole DisputeEvidenceRole
+  /// SHA-256 of the submitter's wallet hash — never the raw address.
+  submitterHash String
+  /// JSON array of algorithm identifiers used to produce evidence hashes.
+  algorithms   Json
+  /// JSON array of storage references — each is a {label, refHash} pair.
+  /// refHash = SHA-256 of the storage URI so the raw URI is never persisted.
+  storageRefs  Json
+  /// Stellar contract transaction hash for on-chain evidence, if any.
+  contractTransactionHash String?
+  /// ISO-8601 timestamp when on-chain evidence was confirmed.
+  contractConfirmedAt     DateTime?
+  createdAt    DateTime            @default(now())
+
+  @@index([disputeId])
+  @@index([manifestHash])
+  @@index([submitterRole])
 }
