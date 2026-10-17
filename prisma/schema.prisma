@@ -473,3 +473,39 @@ model AuthAuditEvent {
   @@index([eventType, createdAt])
   @@index([createdAt])
 }
+
+// ─── Registry capacity trend metrics ──────────────────────────────────────
+
+enum CapacityResourceType {
+  ISSUER
+  SCHEMA
+  PROOF
+  STORAGE
+}
+
+enum AlertState {
+  CLEAR
+  WARNING
+  CRITICAL
+  STALE
+}
+
+/// Bounded aggregate sample of registry capacity.
+///
+/// No private records: only aggregate counts (issuer count, proof count, etc.)
+/// are persisted.  The sample hash enables replay detection and deduplication.
+/// Old samples are pruned to keep the series bounded (see MAX_SAMPLES_PER_TYPE).
+model RegistryCapacitySample {
+  id            String               @id @default(cuid())
+  resourceType  CapacityResourceType
+  /// Aggregate count at sample time (e.g. total issuers, total proofs).
+  count         BigInt
+  /// SHA-256 hash of the canonical sample body for replay detection.
+  sampleHash    String               @unique
+  /// ISO-8601 timestamp when the sample was collected.
+  sampledAt     DateTime
+  createdAt     DateTime             @default(now())
+
+  @@index([resourceType, sampledAt])
+  @@index([sampledAt])
+}

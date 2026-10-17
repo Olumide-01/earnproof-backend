@@ -43,6 +43,9 @@ export const METRIC_NAMES = {
   jobRunsTotal: "job_runs_total",
   jobDurationMs: "job_duration_ms",
   jobRecordsAffectedTotal: "job_records_affected_total",
+  // ─── Registry capacity trends ──────────────────────────────────────────
+  capacitySampleCount: "capacity_sample_count",
+  capacityAlertActive: "capacity_alert_active",
 } as const;
 
 /**
@@ -170,4 +173,17 @@ export function registerCoreMetrics(registry: MetricsRegistry): void {
     help: "Records affected by a scheduled job. A count only; never record content.",
     labelNames: ["job", "workflow"],
   });
+  // ─── Registry capacity trends ──────────────────────────────────────────
+  registry.registerCounter({
+    name: METRIC_NAMES.capacitySampleCount,
+    help: "Capacity samples collected, by resource type.",
+    labelNames: ["resource_type"],
+  });
+
+  registry.registerCounter({
+    name: METRIC_NAMES.capacityAlertActive,
+    help: "Active capacity alerts, by resource type and alert state.",
+    labelNames: ["resource_type", "alert_state"],
+  });
+
 }

@@ -90,6 +90,12 @@ export const ALLOWED_METRIC_LABELS = {
 
   /** Health verdict. */
   health: ["up", "down", "degraded"],
+  resource_type: ["ISSUER", "SCHEMA", "PROOF", "STORAGE"],
+  /** Registry resource type for capacity metrics. */
+
+  alert_state: ["clear", "warning", "critical", "stale"],
+  /** Capacity alert state. */
+
 } as const;
 
 export type MetricLabelName = keyof typeof ALLOWED_METRIC_LABELS;

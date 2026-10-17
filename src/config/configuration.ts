@@ -86,6 +86,10 @@ export const configuration = () => ({
     // with poll rate rather than with anything meaningful.
     cacheTtlMs: Number(process.env.HEALTH_CACHE_TTL_MS ?? 5000),
   },
+  capacityMetrics: {
+    enabled: process.env.CAPACITY_METRICS_ENABLED === "true",
+    samplerCron: process.env.CAPACITY_SAMPLER_CRON ?? "*/5 * * * *",
+  },
   issuerRegistry: {
     enabled: process.env.ISSUER_REGISTRY_ENABLED === "true",
     stellarCliPath: process.env.STELLAR_CLI_PATH ?? "stellar",

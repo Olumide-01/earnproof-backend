@@ -541,3 +541,72 @@ export function pendingAnchoringIntent(
 }
 
 export * from "./synthetic";
+
+// ---------------------------------------------------------------------------
+// Capacity Samples
+// ---------------------------------------------------------------------------
+
+import {
+  CapacitySample,
+  ResourceType,
+  ResourceTypeValue,
+  CAPACITY_SAMPLE_VERSION,
+} from "../../metrics/capacity-types";
+import { sha256 } from "../../common/crypto/hash";
+import { canonicalize } from "../../common/crypto/canonicalize";
+
+export interface CapacitySampleInput {
+  resourceType: ResourceTypeValue;
+  count: number;
+  sampleHash: string;
+  sampledAt: Date;
+}
+
+/** Build a synthetic capacity sample with a deterministic hash. */
+export function buildCapacitySample(
+  seed: string | number,
+  resourceType: ResourceTypeValue = ResourceType.PROOF,
+  count = 100,
+  overrides: Partial<CapacitySampleInput> = {},
+): CapacitySampleInput {
+  const sampledAt = new Date("2025-01-01T12:00:00.000Z");
+  const body = {
+    version: CAPACITY_SAMPLE_VERSION,
+    resourceType,
+    count,
+    sampledAt: sampledAt.toISOString(),
+  };
+  const sampleHash = `sha256:${sha256(canonicalize(body))}-synthetic-${String(seed)}`;
+  return { resourceType, count, sampleHash, sampledAt, ...overrides };
+}
+
+/** A series of synthetic samples with linearly increasing counts. */
+export function buildCapacitySeries(
+  resourceType: ResourceTypeValue,
+  sampleCount: number,
+  baseCount: number,
+  ratePerDay: number,
+): CapacitySample[] {
+  const series: CapacitySample[] = [];
+  for (let i = 0; i < sampleCount; i++) {
+    const daysOffset = i;
+    const sampledAt = new Date(
+      new Date("2025-01-01T00:00:00.000Z").getTime() +
+        daysOffset * 24 * 60 * 60 * 1_000,
+    );
+    const count = Math.floor(baseCount + ratePerDay * daysOffset);
+    const body = {
+      version: CAPACITY_SAMPLE_VERSION,
+      resourceType,
+      count,
+      sampledAt: sampledAt.toISOString(),
+    };
+    series.push({
+      resourceType,
+      count,
+      sampleHash: `sha256:${sha256(canonicalize(body))}-series-${i}`,
+      sampledAt,
+    });
+  }
+  return series;
+}

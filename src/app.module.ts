@@ -14,6 +14,7 @@ import { HealthModule } from "./health/health.module";
 import { HttpMetricsInterceptor } from "./common/interceptors/http-metrics.interceptor";
 import { ObservabilityModule } from "./common/observability/observability.module";
 import { JobsModule } from "./jobs/jobs.module";
+import { MetricsModule } from "./metrics/metrics.module";
 import { IssuersModule } from "./issuers/issuers.module";
 import { OrganizationsModule } from "./organizations/organizations.module";
 import { PaymentsModule } from "./payments/payments.module";
@@ -43,6 +44,7 @@ import { WebhooksModule } from "./webhooks/webhooks.module";
     CredentialsModule,
     TrustedSourcesModule,
     JobsModule,
+    MetricsModule,
     WebhooksModule,
   ],
   providers: [
