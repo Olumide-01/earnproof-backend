@@ -10,6 +10,13 @@ import {
   syntheticWalletAddress,
   syntheticWalletHash,
 } from "./synthetic";
+import {
+  ASSESSMENT_VERSION,
+  CompatibilityFinding,
+  FindingSeverity,
+  CheckKind,
+  SignedArtifact,
+} from "../../contracts/assessment-types";
 
 /**
  * Intent-based factories for test and demo data.
@@ -541,3 +548,141 @@ export function pendingAnchoringIntent(
 }
 
 export * from "./synthetic";
+
+// ---------------------------------------------------------------------------
+// Compatibility Assessments
+// ---------------------------------------------------------------------------
+
+export type AssessmentStatusValue = "PENDING" | "RUNNING" | "COMPLETE" | "FAILED";
+
+export interface CompatibilityAssessmentInput {
+  id: string;
+  proofId: string;
+  version: string;
+  findingsHash: string | null;
+  status: AssessmentStatusValue;
+  requestedBy: string;
+  artifactVersion: string;
+  hasBlockingFindings: boolean;
+  findings: CompatibilityFinding[] | null;
+  lastErrorSafe: string | null;
+  completedAt: Date | null;
+}
+
+/** A completed assessment with no BLOCKING findings — governance can auto-approve. */
+export function buildCompatibilityAssessment(
+  seed: string | number,
+  proofId: string,
+  overrides: Partial<CompatibilityAssessmentInput> = {},
+): CompatibilityAssessmentInput {
+  const id = syntheticId("assessment", seed);
+  return {
+    id,
+    proofId,
+    version: ASSESSMENT_VERSION,
+    findingsHash: `sha256:synthetic${syntheticCredentialHash(String(seed)).replace("sha256:", "").slice(0, 55)}`,
+    status: "COMPLETE",
+    requestedBy: syntheticWalletHash(`req-${String(seed)}`),
+    artifactVersion: "1",
+    hasBlockingFindings: false,
+    findings: [
+      {
+        checkKind: CheckKind.ABI,
+        severity: FindingSeverity.INFO,
+        description: "No previous ABI snapshot; current ABI recorded as baseline.",
+        hash: `sha256:synthetic${syntheticCredentialHash(`abi-${String(seed)}`).replace("sha256:", "").slice(0, 55)}`,
+      },
+    ],
+    lastErrorSafe: null,
+    completedAt: new Date("2025-01-01T12:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+/** An assessment blocked by a BLOCKING finding — governance must reject. */
+export function blockingCompatibilityAssessment(
+  seed: string | number,
+  proofId: string,
+  overrides: Partial<CompatibilityAssessmentInput> = {},
+): CompatibilityAssessmentInput {
+  const blockingFinding: CompatibilityFinding = {
+    checkKind: CheckKind.ABI,
+    severity: FindingSeverity.BLOCKING,
+    description: `ABI function "transfer" was removed — existing callers will break.`,
+    hash: `sha256:synthetic${syntheticCredentialHash(`blocking-${String(seed)}`).replace("sha256:", "").slice(0, 55)}`,
+    evidence: { removedFunction: "transfer" },
+  };
+  return buildCompatibilityAssessment(seed, proofId, {
+    findingsHash: `sha256:synthetic${syntheticCredentialHash(`blocking-hash-${String(seed)}`).replace("sha256:", "").slice(0, 55)}`,
+    hasBlockingFindings: true,
+    findings: [blockingFinding],
+    ...overrides,
+  });
+}
+
+/** An assessment that failed before completing. */
+export function failedCompatibilityAssessment(
+  seed: string | number,
+  proofId: string,
+  overrides: Partial<CompatibilityAssessmentInput> = {},
+): CompatibilityAssessmentInput {
+  return buildCompatibilityAssessment(seed, proofId, {
+    status: "FAILED",
+    findingsHash: null,
+    findings: null,
+    hasBlockingFindings: false,
+    completedAt: null,
+    lastErrorSafe: "assessment execution failed: redacted",
+    ...overrides,
+  });
+}
+
+/** A pending assessment not yet processed by the worker. */
+export function pendingCompatibilityAssessment(
+  seed: string | number,
+  proofId: string,
+  overrides: Partial<CompatibilityAssessmentInput> = {},
+): CompatibilityAssessmentInput {
+  return buildCompatibilityAssessment(seed, proofId, {
+    status: "PENDING",
+    findingsHash: null,
+    findings: null,
+    hasBlockingFindings: false,
+    completedAt: null,
+    lastErrorSafe: null,
+    ...overrides,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Signed Artifacts (test inputs — never contain real material)
+// ---------------------------------------------------------------------------
+
+/** A minimal well-formed synthetic signed artifact. */
+export function buildSignedArtifact(
+  seed: string | number,
+  proofId: string,
+  overrides: Partial<SignedArtifact> = {},
+): SignedArtifact {
+  return {
+    proofId,
+    schemaVersion: "1",
+    credentialHash: syntheticCredentialHash(String(seed)),
+    abi: [
+      { name: "register_proof", inputs: ["proofId", "commitment"], outputs: ["bool"] },
+      { name: "is_valid_proof", inputs: ["proofId"], outputs: ["bool"] },
+    ],
+    storage: [
+      { slot: "0x00", type: "bytes32", mutable: false },
+      { slot: "0x01", type: "address", mutable: false },
+    ],
+    dependencies: [
+      { name: "@stellar/sdk", version: "11.0.0", breaking: false },
+    ],
+    clientContracts: [
+      { contractId: "earnproof.proof-registry.v1", version: "1", deprecated: false },
+    ],
+    migrationNotes: [],
+    ...overrides,
+  };
+}

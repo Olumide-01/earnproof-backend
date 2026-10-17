@@ -171,6 +171,24 @@ export const RETENTION_CLASSES: readonly RetentionClass[] = [
     sweep: SweepMode.AUTOMATED,
   },
 
+  {
+    key: "compatibility_assessments",
+    model: "ContractCompatibilityAssessment",
+    purpose:
+      "Immutable compatibility findings bound to a proof version. Retained as " +
+      "evidence that governance approval was preceded by a documented assessment.",
+    owner: "Security",
+    defaultDays: MAXIMUM_RETENTION_DAYS,
+    envVar: "RETENTION_COMPAT_ASSESSMENT_DAYS",
+    cutoffColumn: "createdAt",
+    backingIndex: "@@index([proofId])",
+    disposal: DisposalMethod.ANONYMISE,
+    sweep: SweepMode.PRESERVED,
+    preservationReason:
+      "A completed assessment is governance evidence. Deleting it would remove " +
+      "the audit trail showing that blocking findings were reviewed before approval.",
+  },
+
   // ─── Preserved: never swept by the automated job ─────────────────────────
   {
     key: "proofs",

@@ -459,6 +459,62 @@ export const AUDIT_EVENTS: readonly AuditEventDefinition[] = [
     description:
       "A trusted payer was soft-deleted; history referencing it is retained.",
   },
+  // ─────────────────────────── compatibility assessment ──────────────────
+  {
+    type: "proof.compatibility_assessment_triggered",
+    domain: "proof",
+    store: "audit_log",
+    match: {
+      store: "audit_log",
+      action: "compatibility_assessment.triggered",
+      resourceType: "proof",
+    },
+    actorTypes: ["user"],
+    outcomes: ["success"],
+    tenant: "actor_id",
+    writeFailure: "fail_closed",
+    requiredMetadata: ["assessmentId", "proofId", "artifactVersion"],
+    description:
+      "An ADMIN triggered a contract upgrade compatibility assessment for a proof.",
+  },
+  {
+    type: "proof.compatibility_assessment_complete",
+    domain: "proof",
+    store: "audit_log",
+    match: {
+      store: "audit_log",
+      action: "compatibility_assessment.complete",
+      resourceType: "proof",
+    },
+    actorTypes: ["user"],
+    outcomes: ["success"],
+    tenant: "actor_id",
+    writeFailure: "fail_closed",
+    requiredMetadata: [
+      "assessmentId",
+      "proofId",
+      "findingsHash",
+      "hasBlockingFindings",
+    ],
+    description:
+      "A compatibility assessment completed; findings are immutable from this point.",
+  },
+  {
+    type: "proof.compatibility_assessment_failed",
+    domain: "proof",
+    store: "audit_log",
+    match: {
+      store: "audit_log",
+      action: "compatibility_assessment.failed",
+      resourceType: "proof",
+    },
+    actorTypes: ["user"],
+    outcomes: ["denied"],
+    tenant: "actor_id",
+    writeFailure: "fail_closed",
+    requiredMetadata: ["assessmentId", "proofId"],
+    description: "A compatibility assessment failed; a retry is required.",
+  },
 ];
 
 /** Every domain the taxonomy is required to cover. */
