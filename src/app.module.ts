@@ -19,6 +19,7 @@ import { OrganizationsModule } from "./organizations/organizations.module";
 import { PaymentsModule } from "./payments/payments.module";
 import { ProofsModule } from "./proofs/proofs.module";
 import { TrustedSourcesModule } from "./trusted-sources/trusted-sources.module";
+import { PoliciesModule } from "./policies/policies.module";
 import { WebhooksModule } from "./webhooks/webhooks.module";
 
 @Module({
@@ -43,6 +44,7 @@ import { WebhooksModule } from "./webhooks/webhooks.module";
     CredentialsModule,
     TrustedSourcesModule,
     JobsModule,
+    PoliciesModule,
     WebhooksModule,
   ],
   providers: [

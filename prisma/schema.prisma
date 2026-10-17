@@ -473,3 +473,38 @@ model AuthAuditEvent {
   @@index([eventType, createdAt])
   @@index([createdAt])
 }
+
+// ─── Semantic permission change diffs ─────────────────────────────────────────
+
+/// Versioned semantic diff for a role, scope, or governance permission change.
+///
+/// Secrets never enter diffs: only permission names, grant/revoke flags, and
+/// actor hashes (SHA-256 of wallet hash) are persisted.
+/// diffHash provides replay detection and tamper evidence.
+model PermissionChangeDiff {
+  id          String   @id @default(cuid())
+  /// Schema version, e.g. "earnproof.permission-diff.v1".
+  version     String
+  /// The resource whose permissions changed (userId, apiKeyId, etc.).
+  subjectId   String
+  /// Kind of subject: "user", "api_key", or "governance".
+  subjectKind String
+  /// SHA-256 of the actor's wallet hash — never raw address.
+  actorHash   String
+  /// Complete before-snapshot (JSON array of PermissionDiffEntry).
+  before      Json
+  /// Complete after-snapshot (JSON array of PermissionDiffEntry).
+  after       Json
+  /// Only the changed entries (grants and revokes).
+  changes     Json
+  /// Deterministic SHA-256 hash of the canonical diff body.
+  diffHash    String   @unique
+  /// Optional link to the AuditLog row that triggered this diff.
+  auditLogId  String?
+  changedAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([subjectId, changedAt])
+  @@index([subjectKind, changedAt])
+  @@index([diffHash])
+}
