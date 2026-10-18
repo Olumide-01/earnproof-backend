@@ -1466,6 +1466,9 @@ model ApprovalRequest {
   expiresAt           DateTime
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
+  /// Signed receipt binding this approval decision to proposal and payload.
+  /// Issued after confirmation and used for verifiable audit trails.
+  receipt             ApprovalIntentReceipt?
 
   @@index([status, expiresAt])
   @@index([requestedById])
@@ -2391,6 +2394,57 @@ model ContractGovernanceProposal {
   @@unique([network, contractId, proposalId])
   @@index([network, contractId, status])
   @@index([status, expiresAt])
+}
+
+// ---------------------------------------------------------------------------
+// Signed Governance Approval Intent Receipts (#302)
+// ---------------------------------------------------------------------------
+
+/// A cryptographically signed receipt binding an approval decision to the exact
+/// proposal, contract, network, role, and payload hash. Receipts are issued
+/// after approval confirmation and enable verifiable audit trails and off-chain
+/// attestation of governance decisions.
+model ApprovalIntentReceipt {
+  id                    String                @id @default(cuid())
+  /// Foreign key to ApprovalRequest. Each approval has at most one receipt.
+  approvalRequestId     String                @unique
+  approvalRequest       ApprovalRequest       @relation(fields: [approvalRequestId], references: [id], onDelete: Cascade)
+  
+  /// Receipt schema version (e.g., "v1", "v2"). Explicit versioning for forward compatibility.
+  schemaVersion         String                @default("v1")
+  
+  /// The complete, canonical receipt JSON including all binding data.
+  /// Canonical encoding: sorted keys, RFC 7159 JSON, no special numbers.
+  receiptData           Json
+  
+  /// Canonical, deterministic hash of receiptData for efficient lookups and idempotency.
+  /// Format: "sha256:<hex>"
+  receiptHash           String                @unique
+  
+  /// Non-secret key ID used to sign this receipt (e.g., "earnproof-v0").
+  /// Stable across key rotation so verification remains possible indefinitely.
+  signingKeyId          String
+  
+  /// Signed proof: EdDSA signature over the canonical receiptData.
+  /// Format: "ed25519:<base64url>"
+  signature             String
+  
+  /// Hash of the signed payload for verification.
+  /// Format: "sha256:<hex>"
+  credentialHash        String
+  
+  /// Audit timestamp: when the receipt was issued (copied from approval decision timestamp).
+  issuedAt              DateTime
+  
+  /// Timestamp when the receipt was persisted.
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+
+  @@unique([approvalRequestId])
+  @@index([schemaVersion])
+  @@index([signingKeyId])
+  @@index([issuedAt])
+  @@index([receiptHash])
 }
 
 // ---------------------------------------------------------------------------
