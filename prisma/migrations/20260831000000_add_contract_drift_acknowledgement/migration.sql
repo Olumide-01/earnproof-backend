@@ -1,4 +1,4 @@
-﻿-- Acknowledgement store for expected contract configuration drift.
+-- Acknowledgement store for expected contract configuration drift.
 -- Allows operators to suppress blocking drift during upgrades for a bounded window.
 CREATE TABLE "ContractDriftAcknowledgement" (
   "id"             TEXT         NOT NULL,
