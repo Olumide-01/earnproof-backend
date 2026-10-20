@@ -1,5 +1,5 @@
-import { ApiProperty } from "@nestjs/swagger";
-import { ProofStatus } from "@prisma/client";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { ProofStatus, RevocationActorType, RevocationReasonCode } from "@prisma/client";
 import { AnchoringResultDto } from "./proof-created.dto";
 
 export class RevokeProofResponseDto {
@@ -14,6 +14,20 @@ export class RevokeProofResponseDto {
     example: "2025-01-20T15:30:00.000Z",
   })
   revokedAt!: string;
+
+  @ApiProperty({ enum: RevocationActorType, example: RevocationActorType.OWNER })
+  revokedByType!: RevocationActorType;
+
+  @ApiProperty({ enum: RevocationReasonCode, example: RevocationReasonCode.OWNER_REQUESTED })
+  revocationReasonCode!: RevocationReasonCode;
+
+  @ApiPropertyOptional({
+    description: "Private operator note. Only present for the owner or an administrator.",
+  })
+  revocationReasonPrivate?: string | null;
+
+  @ApiPropertyOptional({ example: "sha256:" + "a".repeat(64) })
+  revocationEvidenceHash?: string | null;
 
   @ApiProperty({ type: () => AnchoringResultDto })
   anchoring!: AnchoringResultDto;

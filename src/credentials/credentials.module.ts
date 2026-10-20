@@ -1,13 +1,22 @@
 import { Module } from "@nestjs/common";
 import { ProofsModule } from "../proofs/proofs.module";
+import { CredentialSigningKeyringService } from "../common/crypto/credential-signing-keyring.service";
 import { CredentialsController } from "./credentials.controller";
 import { CredentialsService } from "./credentials.service";
+import { EvidenceBundleService } from "./evidence-bundle.service";
 
-// DatabaseModule (@Global) and ConfigModule (isGlobal: true) are already
-// available application-wide, so no explicit imports are needed here.
 @Module({
   imports: [ProofsModule],
   controllers: [CredentialsController],
-  providers: [CredentialsService],
+  providers: [
+    CredentialsService,
+    CredentialSigningKeyringService,
+    EvidenceBundleService,
+  ],
+  exports: [
+    CredentialsService,
+    CredentialSigningKeyringService,
+    EvidenceBundleService,
+  ],
 })
 export class CredentialsModule {}

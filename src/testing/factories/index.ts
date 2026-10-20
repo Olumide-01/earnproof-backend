@@ -10,6 +10,13 @@ import {
   syntheticWalletAddress,
   syntheticWalletHash,
 } from "./synthetic";
+import {
+  ASSESSMENT_VERSION,
+  CompatibilityFinding,
+  FindingSeverity,
+  CheckKind,
+  SignedArtifact,
+} from "../../contracts/assessment-types";
 
 /**
  * Intent-based factories for test and demo data.
@@ -541,3 +548,146 @@ export function pendingAnchoringIntent(
 }
 
 export * from "./synthetic";
+
+
+// ---------------------------------------------------------------------------
+// Credential Verification Key Trust Pins
+// ---------------------------------------------------------------------------
+
+export interface CredentialVerificationKeyTrustPinInput {
+  id: string;
+  organizationId: string;
+  issuerId: string;
+  network: string;
+  keyId: string;
+  trustedKeySnapshot: {
+    alg: "EdDSA";
+    crv: "Ed25519";
+    kid: string;
+    kty: "OKP";
+    x: string;
+    use: "sig";
+    status: "active" | "retired";
+  };
+  effectiveAt: Date;
+  expiresAt: Date | null;
+  status: "ACTIVE" | "RETIRED" | "REVOKED";
+  decisionMetadata?: {
+    decidedBy: string;
+    reason?: string;
+    context?: Record<string, unknown>;
+  };
+  revision: number;
+  revokedAt: Date | null;
+  revokedBy: string | null;
+  revocationReason: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** Base trust pin factory. */
+export function buildTrustPin(
+  seed: string | number,
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  const seedStr = String(seed);
+  return {
+    id: syntheticId("trust_pin", seed),
+    organizationId,
+    issuerId,
+    network: "testnet",
+    keyId: `key-${seedStr}`,
+    trustedKeySnapshot: {
+      alg: "EdDSA",
+      crv: "Ed25519",
+      kid: `key-${seedStr}`,
+      kty: "OKP",
+      x: syntheticSecret(seed).substring(0, 43), // base64url encoded public key material
+      use: "sig",
+      status: "active",
+    },
+    effectiveAt: syntheticDate(-30),
+    expiresAt: syntheticDate(90),
+    status: "ACTIVE",
+    decisionMetadata: {
+      decidedBy: syntheticId("user", seed),
+      reason: "Initial trust pin",
+    },
+    revision: 0,
+    revokedAt: null,
+    revokedBy: null,
+    revocationReason: null,
+    createdAt: syntheticDate(-30),
+    updatedAt: syntheticDate(-30),
+    ...overrides,
+  };
+}
+
+/** An active trust pin for a key. */
+export function activeTrustPin(
+  seed: string | number,
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  return buildTrustPin(seed, organizationId, issuerId, {
+    status: "ACTIVE",
+    effectiveAt: syntheticDate(-30),
+    expiresAt: syntheticDate(90),
+    revokedAt: null,
+    ...overrides,
+  });
+}
+
+/** A retired trust pin (superseded by a new one). */
+export function retiredTrustPin(
+  seed: string | number,
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  return buildTrustPin(seed, organizationId, issuerId, {
+    status: "RETIRED",
+    effectiveAt: syntheticDate(-60),
+    expiresAt: syntheticDate(0),
+    revokedAt: null,
+    updatedAt: syntheticDate(-10),
+    revision: 1,
+    ...overrides,
+  });
+}
+
+/** A revoked trust pin (due to key compromise). */
+export function revokedTrustPin(
+  seed: string | number,
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  return buildTrustPin(seed, organizationId, issuerId, {
+    status: "REVOKED",
+    revokedAt: syntheticDate(-5),
+    revokedBy: syntheticId("user", "admin"),
+    revocationReason: "Key compromise detected",
+    updatedAt: syntheticDate(-5),
+    revision: 1,
+    ...overrides,
+  });
+}
+
+/** An expired trust pin (past its expiresAt date). */
+export function expiredTrustPin(
+  seed: string | number,
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  return buildTrustPin(seed, organizationId, issuerId, {
+    status: "ACTIVE",
+    effectiveAt: syntheticDate(-60),
+    expiresAt: syntheticDate(-5), // Already expired
+    ...overrides,
+  });
+}

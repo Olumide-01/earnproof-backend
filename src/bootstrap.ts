@@ -8,6 +8,7 @@ import { json, urlencoded } from "express";
 import helmet from "helmet";
 import { GlobalExceptionFilter } from "./common/filters/global-exception.filter";
 import { RequestIdInterceptor } from "./common/interceptors/request-id.interceptor";
+import { RequestContextMiddleware } from "./common/logger/request-context.middleware";
 import {
   GLOBAL_BODY_LIMIT_BYTES,
   ROUTE_BODY_LIMITS,
@@ -63,6 +64,12 @@ export function configureApp(
 
   // ── Structural limits ────────────────────────────────────────────────────
   app.use(requestShapeMiddleware);
+
+  // ── Request context middleware (must run after structural limits but before
+  //    other middleware, to establish AsyncLocalStorage for request/user IDs).
+  app.use((req: any, res: any, next: any) =>
+    new RequestContextMiddleware().use(req, res, next),
+  );
 
   app.use(helmet());
 

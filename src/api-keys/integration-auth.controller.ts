@@ -1,13 +1,16 @@
-import { Controller, Get, HttpStatus, UseGuards } from "@nestjs/common";
+import { Controller, Get, UseGuards } from "@nestjs/common";
 import {
   ApiBearerAuth,
+  ApiForbiddenResponse,
   ApiHeader,
+  ApiOkResponse,
   ApiOperation,
-  ApiResponse,
   ApiTags,
+  ApiUnauthorizedResponse,
 } from "@nestjs/swagger";
 import { ApiKeyScope } from "@prisma/client";
 import { CurrentApiKey } from "../common/decorators/current-api-key.decorator";
+import { AuthenticatedRoute } from "../common/decorators/authorization-policy.decorator";
 import { RequireScopes } from "../common/decorators/require-scopes.decorator";
 import { ApiErrorDto } from "../common/dto/api-error.dto";
 import { ApiKeyGuard } from "../common/guards/api-key.guard";
@@ -27,6 +30,7 @@ import { IntegrationAuthContextDto } from "./dto/integration-auth-context.dto";
  * against a real resource and without a scope the caller may not hold.
  */
 @ApiTags("integrations")
+@AuthenticatedRoute()
 @ApiBearerAuth(API_KEY_AUTH_SCHEME)
 @ApiHeader(ORGANIZATION_ID_HEADER)
 @Controller("integrations")
@@ -46,29 +50,21 @@ export class IntegrationAuthController {
       "The response never contains the key secret or its hash; neither can be " +
       "reconstructed from any field returned here.",
   })
-  @ApiResponse({
-    status: HttpStatus.OK,
+  @ApiOkResponse({
     description: "The key is valid and holds the ORG_READ scope.",
     type: IntegrationAuthContextDto,
   })
-  @ApiResponse({
-    status: HttpStatus.UNAUTHORIZED,
+  @ApiUnauthorizedResponse({
     description:
       "Missing, malformed, unknown, revoked, or expired key, or a missing " +
       "`X-Organization-Id` header. All of these answer identically so that the " +
       "response cannot be used to probe which keys exist.",
     type: ApiErrorDto,
   })
-  @ApiResponse({
-    status: HttpStatus.FORBIDDEN,
+  @ApiForbiddenResponse({
     description:
       "The key is valid but does not hold the `ORG_READ` scope. Rotate is not " +
       "required — create a key with the scope, or grant it.",
-    type: ApiErrorDto,
-  })
-  @ApiResponse({
-    status: HttpStatus.TOO_MANY_REQUESTS,
-    description: "Rate limit exceeded.",
     type: ApiErrorDto,
   })
   authContext(@CurrentApiKey() context: ApiKeyContext): IntegrationAuthContextDto {

@@ -1,5 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { ProofStatus, ProofType } from "@prisma/client";
+import {
+  ProofStatus,
+  ProofType,
+  RevocationActorType,
+  RevocationReasonCode,
+} from "@prisma/client";
 
 export class ProofAssetDto {
   @ApiProperty({ example: "USDC" })
@@ -72,6 +77,21 @@ export class ProofHistoryItemDto {
 
   @ApiPropertyOptional({ nullable: true })
   revokedAt!: string | null;
+
+  @ApiPropertyOptional({ enum: RevocationActorType, nullable: true })
+  revokedByType!: RevocationActorType | null;
+
+  @ApiPropertyOptional({ enum: RevocationReasonCode, nullable: true })
+  revocationReasonCode!: RevocationReasonCode | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "Private operator note. Only present in this authorized owner/admin view.",
+  })
+  revocationReasonPrivate!: string | null;
+
+  @ApiPropertyOptional({ nullable: true, example: "sha256:" + "a".repeat(64) })
+  revocationEvidenceHash!: string | null;
 
   @ApiProperty({ type: () => ProofAnchoringSummaryDto })
   anchoring!: ProofAnchoringSummaryDto;

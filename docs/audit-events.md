@@ -35,26 +35,43 @@ and continues.
 | --- | --- | --- | --- | --- | --- | --- |
 | `authentication.challenge_created` | authentication | `auth_audit_event` | wallet | success | wallet hash | fail_open |
 | `authentication.challenge_verified` | authentication | `auth_audit_event` | wallet | success | wallet hash | fail_open |
+| `authentication.wallet_rotated` | authentication | `audit_log` | user | success | actor | fail_closed |
 | `authentication.signature_invalid` | authentication | `auth_audit_event` | wallet | denied | wallet hash | fail_open |
 | `authentication.challenge_expired` | authentication | `auth_audit_event` | wallet | denied | wallet hash | fail_open |
 | `authentication.challenge_replayed` | authentication | `auth_audit_event` | wallet | denied | wallet hash | fail_open |
+| `authentication.account_inactive` | authentication | `auth_audit_event` | wallet | denied | wallet hash | fail_open |
 | `authorization.rate_limited` | authorization | `auth_audit_event` | wallet | denied | wallet hash | fail_open |
 | `authorization.api_key_authenticated` | authorization | `audit_log` | api_key | success | `metadata.organizationId` | fail_open |
 | `issuer.created` | issuer | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
 | `issuer.metadata_updated` | issuer | `audit_log` | user | success | actor | fail_closed |
 | `issuer.status_updated` | issuer | `audit_log` | user | success | actor | fail_closed |
 | `issuer.status_synced` | issuer | `audit_log` | user | success | actor | fail_closed |
+| `issuer.address_rotation_requested` | issuer | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
+| `issuer.address_rotated` | issuer | `audit_log` | user, system | success | `metadata.organizationId` | fail_closed |
+| `issuer.address_rotation_failed` | issuer | `audit_log` | user, system | success | `metadata.organizationId` | fail_closed |
 | `proof.verification_recorded` | proof | `verification_event_log` | system | success, denied | proof | fail_open |
+| `proof.revoked` | proof | `audit_log` | user | success | resource | fail_closed |
+| `anchoring_intent.retried` | proof | `audit_log` | user | success | resource | fail_closed |
+| `anchoring_intent.abandoned` | proof | `audit_log` | user | success | resource | fail_closed |
 | `api_key.created` | api_key | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
 | `api_key.rotated` | api_key | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
 | `api_key.revoked` | api_key | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
 | `webhook.delivery_replayed` | webhook | `audit_log` | user | success | actor | fail_closed |
 | `operator.organization_created` | operator | `audit_log` | user | success | resource | fail_closed |
 | `operator.organization_updated` | operator | `audit_log` | user | success | resource | fail_closed |
+| `operator.organization_archived` | operator | `audit_log` | user | success | resource | fail_closed |
+| `operator.organization_restored` | operator | `audit_log` | user | success | resource | fail_closed |
+| `operator.organization_legal_hold_placed` | operator | `audit_log` | user | success | resource | fail_closed |
+| `operator.organization_legal_hold_released` | operator | `audit_log` | user | success | resource | fail_closed |
+| `operator.organization_deleted` | operator | `audit_log` | user | success | resource | fail_closed |
 | `operator.payment_classification_updated` | operator | `audit_log` | user | success | actor | fail_closed |
 | `operator.trusted_source_created` | operator | `audit_log` | user | success | actor | fail_closed |
 | `operator.trusted_source_updated` | operator | `audit_log` | user | success | actor | fail_closed |
 | `operator.trusted_source_deleted` | operator | `audit_log` | user | success | actor | fail_closed |
+| `operator.user_status_changed` | operator | `audit_log` | user | success | resource | fail_closed |
+| `operator.user_role_changed` | operator | `audit_log` | user | success | resource | fail_closed |
+| `operator.payment_backfill_requested` | operator | `audit_log` | user | success | actor | fail_closed |
+| `operator.payment_backfill_cancelled` | operator | `audit_log` | user | success | actor | fail_closed |
 
 ### Stable types and persisted shapes
 
@@ -165,3 +182,36 @@ and only the first is expected.
    [`audit-event-matrix.spec.ts`](../src/common/audit/audit-event-matrix.spec.ts)
    that drives the real service. The coverage assertion fails until you do.
 4. Add the row to the table above. The documentation test fails until you do.
+| `secret_retrieval_receipt.created` | secret_retrieval | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
+| `api_key.created` | api_key | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
+| `api_key.rotated` | api_key | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
+| `webhook.created` | webhook | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
+| `webhook.rotated` | webhook | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
+| `export_download.issued` | export | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
+
+### Secret Retrieval Receipt Events
+
+**Record**: Immutable evidence that a one-time secret (API key, webhook signing secret, or export download token) was revealed to a user or client.
+
+**Event**: `secret_retrieval_receipt.created`
+
+**Metadata**:
+- `secretType`: Type of secret (`api_key` | `webhook` | `export`)
+- `resourceId`: ID of the resource (API key ID, webhook ID, export job ID)
+- `resourceReference`: Human-readable identifier (e.g., API key prefix, webhook URL, export category list)
+- `recipientId`: Who received the secret (user ID, API key prefix, or null for capability URLs)
+- `deliveryChannel`: How the secret was delivered (`http_response` | `download_url` | `email`)
+- `revealedAt`: ISO timestamp when the secret was revealed
+- `receiptId`: ID of the created receipt (cross-reference to `SecretRetrievalReceipt` table)
+- `acknowledgementHash`: SHA-256 hash of (resourceId | secretType | revealedAt | orgSalt)
+
+**Never logged**: The raw secret value, secret hash, or any reversible encoding of the secret.
+
+**Behavior**: Receipt creation is atomic with secret revelation. If secret creation fails, receipt is not created. If receipt creation fails, the entire secret creation is rolled back.
+
+**Retention**: Receipts follow the organization's retention policy (default 2 years). Receipts are immutable and cannot be updated or deleted by users, only by automated expiry.
+
+## Related Documentation
+
+- [Secret Retrieval Receipts Design](../docs/secret-retrieval-receipts.md) — Detailed explanation of receipt model, acknowledgement hash computation, and privacy guarantees.
+- [API Key Security](../docs/api-key-security.md) — API key creation and rotation with receipt tracking.

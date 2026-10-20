@@ -166,14 +166,20 @@ describe("TrustedSourcesController (HTTP)", () => {
 
   describe("GET /trusted-sources", () => {
     it("returns 200 with the user's trusted sources", async () => {
-      service.listTrustedSources.mockResolvedValue([TRUSTED_SOURCE]);
+      service.listTrustedSources.mockResolvedValue({
+        data: [TRUSTED_SOURCE],
+        pageInfo: { hasMore: false, nextCursor: null },
+      });
 
       const res = await request(app.getHttpServer()).get(
         "/api/v1/trusted-sources",
       );
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual([TRUSTED_SOURCE]);
+      expect(res.body).toEqual({
+        data: [TRUSTED_SOURCE],
+        pageInfo: { hasMore: false, nextCursor: null },
+      });
       expect(service.listTrustedSources).toHaveBeenCalledWith(
         AUTHENTICATED_SESSION,
         expect.objectContaining({}),
@@ -181,7 +187,10 @@ describe("TrustedSourcesController (HTTP)", () => {
     });
 
     it("passes query filters through to the service", async () => {
-      service.listTrustedSources.mockResolvedValue([]);
+      service.listTrustedSources.mockResolvedValue({
+        data: [],
+        pageInfo: { hasMore: false, nextCursor: null },
+      });
 
       await request(app.getHttpServer())
         .get("/api/v1/trusted-sources")
@@ -323,6 +332,253 @@ describe("TrustedSourcesController (HTTP)", () => {
 
       expect(res.status).toBe(401);
       expect(service.deleteTrustedSource).not.toHaveBeenCalled();
+    });
+
+    it("passes the correct user and ID to the service", async () => {
+      service.deleteTrustedSource.mockResolvedValue({
+        id: "ts_abc123",
+        status: "DELETED",
+      });
+
+      await request(app.getHttpServer()).delete("/api/v1/trusted-sources/ts_abc123");
+
+      expect(service.deleteTrustedSource).toHaveBeenCalledWith(
+        AUTHENTICATED_SESSION,
+        "ts_abc123",
+      );
+    });
+
+    it("propagates an unhandled service error as 500", async () => {
+      service.deleteTrustedSource.mockRejectedValue(
+        new Error("Unexpected database error"),
+      );
+
+      const res = await request(app.getHttpServer()).delete(
+        "/api/v1/trusted-sources/ts_abc123",
+      );
+
+      expect(res.status).toBe(500);
+    });
+  });
+
+  describe("Request body validation and response DTO transformation", () => {
+    it("POST accepts displayName as optional string", async () => {
+      service.createTrustedSource.mockResolvedValue(TRUSTED_SOURCE);
+
+      const res = await request(app.getHttpServer())
+        .post("/api/v1/trusted-sources")
+        .send({
+          sourceAddress: TRUSTED_SOURCE.sourceAddress,
+          displayName: "Custom Name",
+        });
+
+      expect(res.status).toBe(201);
+      expect(service.createTrustedSource).toHaveBeenCalledWith(
+        AUTHENTICATED_SESSION,
+        expect.objectContaining({ displayName: "Custom Name" }),
+      );
+    });
+
+    it("POST rejects if sourceAddress exceeds max length", async () => {
+      const res = await request(app.getHttpServer())
+        .post("/api/v1/trusted-sources")
+        .send({
+          sourceAddress: "G" + "X".repeat(200), // Way too long
+        });
+
+      expect(res.status).toBe(422);
+      expect(service.createTrustedSource).not.toHaveBeenCalled();
+    });
+
+    it("POST rejects if displayName exceeds max length (120 chars)", async () => {
+      const res = await request(app.getHttpServer())
+        .post("/api/v1/trusted-sources")
+        .send({
+          sourceAddress: TRUSTED_SOURCE.sourceAddress,
+          displayName: "X".repeat(121),
+        });
+
+      expect(res.status).toBe(422);
+    });
+
+    it("POST rejects if sourceType is not 'stellar' or missing", async () => {
+      const res = await request(app.getHttpServer())
+        .post("/api/v1/trusted-sources")
+        .send({
+          sourceAddress: TRUSTED_SOURCE.sourceAddress,
+          sourceType: "invalid-type",
+        });
+
+      expect(res.status).toBe(422);
+    });
+
+    it("POST rejects if issuerId is empty string", async () => {
+      const res = await request(app.getHttpServer())
+        .post("/api/v1/trusted-sources")
+        .send({
+          sourceAddress: TRUSTED_SOURCE.sourceAddress,
+          issuerId: "",
+        });
+
+      expect(res.status).toBe(422);
+    });
+
+    it("PATCH accepts displayName for update", async () => {
+      const updated = { ...TRUSTED_SOURCE, displayName: "New Name" };
+      service.updateTrustedSource.mockResolvedValue(updated);
+
+      const res = await request(app.getHttpServer())
+        .patch("/api/v1/trusted-sources/ts_abc123")
+        .send({ displayName: "New Name" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.displayName).toBe("New Name");
+    });
+
+    it("PATCH accepts issuerId for update", async () => {
+      const updated = { ...TRUSTED_SOURCE, issuer: { id: "issuer_new" } };
+      service.updateTrustedSource.mockResolvedValue(updated);
+
+      const res = await request(app.getHttpServer())
+        .patch("/api/v1/trusted-sources/ts_abc123")
+        .send({ issuerId: "issuer_new" });
+
+      expect(res.status).toBe(200);
+      expect(service.updateTrustedSource).toHaveBeenCalledWith(
+        AUTHENTICATED_SESSION,
+        "ts_abc123",
+        expect.objectContaining({ issuerId: "issuer_new" }),
+      );
+    });
+
+    it("PATCH rejects if displayName exceeds max length", async () => {
+      const res = await request(app.getHttpServer())
+        .patch("/api/v1/trusted-sources/ts_abc123")
+        .send({ displayName: "X".repeat(121) });
+
+      expect(res.status).toBe(422);
+    });
+
+    it("PATCH rejects if issuerId is empty string", async () => {
+      const res = await request(app.getHttpServer())
+        .patch("/api/v1/trusted-sources/ts_abc123")
+        .send({ issuerId: "" });
+
+      expect(res.status).toBe(422);
+    });
+
+    it("GET list propagates service error as 500", async () => {
+      service.listTrustedSources.mockRejectedValue(
+        new Error("Database error"),
+      );
+
+      const res = await request(app.getHttpServer()).get(
+        "/api/v1/trusted-sources",
+      );
+
+      expect(res.status).toBe(500);
+    });
+
+    it("GET by ID propagates unhandled service errors", async () => {
+      service.getTrustedSource.mockRejectedValue(
+        new Error("Unexpected error"),
+      );
+
+      const res = await request(app.getHttpServer()).get(
+        "/api/v1/trusted-sources/ts_abc123",
+      );
+
+      expect(res.status).toBe(500);
+    });
+
+    it("POST rejects requests with unknown fields (whitelist)", async () => {
+      const res = await request(app.getHttpServer())
+        .post("/api/v1/trusted-sources")
+        .send({
+          sourceAddress: TRUSTED_SOURCE.sourceAddress,
+          unknownField: "should-not-be-allowed",
+        });
+
+      expect(res.status).toBe(422);
+    });
+
+    it("PATCH rejects requests with unknown fields", async () => {
+      const res = await request(app.getHttpServer())
+        .patch("/api/v1/trusted-sources/ts_abc123")
+        .send({
+          displayName: "New Name",
+          unknownField: "should-not-be-allowed",
+        });
+
+      expect(res.status).toBe(422);
+    });
+
+    it("GET filters are passed correctly to service", async () => {
+      service.listTrustedSources.mockResolvedValue([]);
+
+      await request(app.getHttpServer())
+        .get("/api/v1/trusted-sources")
+        .query({ sourceAddress: "GB", sourceType: "stellar" });
+
+      expect(service.listTrustedSources).toHaveBeenCalledWith(
+        AUTHENTICATED_SESSION,
+        expect.objectContaining({ sourceAddress: "GB", sourceType: "stellar" }),
+      );
+    });
+  });
+
+  describe("HTTP method & status codes", () => {
+    it("POST /trusted-sources creates a new resource (201)", async () => {
+      service.createTrustedSource.mockResolvedValue(TRUSTED_SOURCE);
+
+      const res = await request(app.getHttpServer())
+        .post("/api/v1/trusted-sources")
+        .send({ sourceAddress: TRUSTED_SOURCE.sourceAddress });
+
+      expect(res.status).toBe(201);
+    });
+
+    it("GET /trusted-sources returns list (200)", async () => {
+      service.listTrustedSources.mockResolvedValue([TRUSTED_SOURCE]);
+
+      const res = await request(app.getHttpServer()).get(
+        "/api/v1/trusted-sources",
+      );
+
+      expect(res.status).toBe(200);
+    });
+
+    it("GET /trusted-sources/:id returns resource (200)", async () => {
+      service.getTrustedSource.mockResolvedValue(TRUSTED_SOURCE);
+
+      const res = await request(app.getHttpServer()).get(
+        "/api/v1/trusted-sources/ts_abc123",
+      );
+
+      expect(res.status).toBe(200);
+    });
+
+    it("PATCH /trusted-sources/:id updates resource (200)", async () => {
+      service.updateTrustedSource.mockResolvedValue(TRUSTED_SOURCE);
+
+      const res = await request(app.getHttpServer())
+        .patch("/api/v1/trusted-sources/ts_abc123")
+        .send({ displayName: "Updated" });
+
+      expect(res.status).toBe(200);
+    });
+
+    it("DELETE /trusted-sources/:id deletes resource (200)", async () => {
+      service.deleteTrustedSource.mockResolvedValue({
+        id: "ts_abc123",
+        status: "DELETED",
+      });
+
+      const res = await request(app.getHttpServer()).delete(
+        "/api/v1/trusted-sources/ts_abc123",
+      );
+
+      expect(res.status).toBe(200);
     });
   });
 });

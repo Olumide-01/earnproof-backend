@@ -9,11 +9,15 @@ import {
   Max,
   MaxLength,
   Min,
+  Matches,
 } from "class-validator";
 
 export class ListProofsDto {
   @IsOptional()
   @IsString()
+  @Matches(/^[A-Za-z0-9_-]+$/, {
+    message: "cursor must be a valid base64url string",
+  })
   cursor?: string;
 
   @IsOptional()

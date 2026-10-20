@@ -1,6 +1,12 @@
 import { CreateChallengeDto } from "../../src/auth/dto/create-challenge.dto";
 import { VerifyChallengeDto } from "../../src/auth/dto/verify-challenge.dto";
+import { CreatePaymentBackfillDto } from "../../src/payments/dto/create-payment-backfill.dto";
 import { CreatePaymentReceiptProofDto } from "../../src/proofs/dto/create-payment-receipt-proof.dto";
+import {
+  CreateAggregateEarningsProofDto,
+  MAX_AGGREGATE_ASSETS,
+  MAX_AGGREGATE_ISSUER_IDS,
+} from "../../src/proofs/dto/create-aggregate-earnings-proof.dto";
 import { CreateMinimumIncomeProofDto } from "../../src/proofs/dto/create-minimum-income-proof.dto";
 import {
   CreateRecurringIncomeProofDto,
@@ -255,6 +261,71 @@ describe("CreateRecurringIncomeProofDto validation contract", () => {
 
   it("rejects an unknown field", async () => {
     const violations = await validateDto(CreateRecurringIncomeProofDto, {
+      ...valid,
+      ...COMMON_UNKNOWN_FIELD,
+    });
+    expect(violations.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CreateAggregateEarningsProofDto
+// ---------------------------------------------------------------------------
+
+describe("CreateAggregateEarningsProofDto validation contract", () => {
+  const valid = {
+    assets: [{ code: "USDC", issuer: VALID_WALLET }],
+    periodStart: "2026-01-01T00:00:00.000Z",
+    periodEnd: "2026-04-01T00:00:00.000Z",
+  };
+
+  it("accepts the minimal valid request (all optionals omitted)", async () => {
+    expect(await isValidDto(CreateAggregateEarningsProofDto, valid)).toBe(true);
+  });
+
+  it("accepts every optional field populated at its boundary", async () => {
+    expect(
+      await isValidDto(CreateAggregateEarningsProofDto, {
+        ...valid,
+        assets: Array.from({ length: MAX_AGGREGATE_ASSETS }, () => ({ code: "XLM" })),
+        sourceScope: "verified_issuers",
+        issuerIds: Array.from({ length: MAX_AGGREGATE_ISSUER_IDS }, (_, i) => `iss_${i}`),
+        roundingIncrement: "0.0000001",
+        expiresInDays: 365,
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["missing assets", { ...valid, assets: undefined }, "assets"],
+    ["empty assets", { ...valid, assets: [] }, "assets"],
+    [
+      "too many assets",
+      { ...valid, assets: Array.from({ length: MAX_AGGREGATE_ASSETS + 1 }, () => ({ code: "XLM" })) },
+      "assets",
+    ],
+    ["an asset without a code", { ...valid, assets: [{ issuer: VALID_WALLET }] }, "assets"],
+    ["an asset with an unknown field", { ...valid, assets: [{ code: "XLM", rate: "1" }] }, "assets"],
+    ["a non-date periodStart", { ...valid, periodStart: "yesterday" }, "periodStart"],
+    ["a missing periodEnd", { ...valid, periodEnd: undefined }, "periodEnd"],
+    ["an unknown sourceScope", { ...valid, sourceScope: "everyone" }, "sourceScope"],
+    ["an unsupported roundingIncrement", { ...valid, roundingIncrement: "5" }, "roundingIncrement"],
+    ["an empty issuerIds", { ...valid, issuerIds: [] }, "issuerIds"],
+    ["duplicate issuerIds", { ...valid, issuerIds: ["iss_1", "iss_1"] }, "issuerIds"],
+    [
+      "too many issuerIds",
+      { ...valid, issuerIds: Array.from({ length: MAX_AGGREGATE_ISSUER_IDS + 1 }, (_, i) => `iss_${i}`) },
+      "issuerIds",
+    ],
+    ["expiresInDays of 0", { ...valid, expiresInDays: 0 }, "expiresInDays"],
+    ["expiresInDays of 366", { ...valid, expiresInDays: 366 }, "expiresInDays"],
+  ])("rejects %s", async (_label, plain, property) => {
+    const violations = await validateDto(CreateAggregateEarningsProofDto, plain);
+    expect(violations.some((v) => v.property === property)).toBe(true);
+  });
+
+  it("rejects an unknown field", async () => {
+    const violations = await validateDto(CreateAggregateEarningsProofDto, {
       ...valid,
       ...COMMON_UNKNOWN_FIELD,
     });

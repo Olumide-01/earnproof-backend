@@ -187,6 +187,7 @@ export function redactError(error: unknown): string {
  * value that identifies a request, not a person.
  */
 export interface LogContext {
+  [key: string]: unknown;
   /** Propagated from `X-Request-ID`. Correlates a log line to one HTTP request. */
   requestId?: string;
   /** Identifies one execution of a scheduled job. */
@@ -205,6 +206,13 @@ export interface LogContext {
 const FORBIDDEN_LOG_FIELDS = new Set<string>([
   "walletAddress",
   "wallet",
+  // Payment account addresses, and their protected forms: ciphertext and
+  // lookup tokens are stable per address, so logging them links records.
+  "sourceAddress",
+  "destinationAddress",
+  "sourceAddressEncrypted",
+  "destinationAddressEncrypted",
+  "sourceAddressLookup",
   "proofId",
   "credentialHash",
   "commitment",

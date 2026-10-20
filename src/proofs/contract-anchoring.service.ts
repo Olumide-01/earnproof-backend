@@ -1,11 +1,25 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { sha256 } from "../common/crypto/hash";
 import { redact } from "../common/observability/redaction";
+import { StructuredLogger } from "../common/logger";
+import { CircuitBreakerRegistry } from "../common/resilience/circuit-breaker.registry";
+import {
+  CircuitBreaker,
+  CircuitOpenError,
+  CircuitState,
+} from "../common/resilience/circuit-breaker";
+import { classifyContractError } from "./contract-error";
 
 const execFileAsync = promisify(execFile);
+
+/** Prefix for per-network, per-operation contract circuit names. */
+export const CONTRACT_CIRCUIT_PREFIX = "contract";
+
+/** Contract operation classes tracked as distinct circuits. */
+export type ContractOperationClass = "register" | "revoke" | "read";
 
 export type AnchorProofInput = {
   proofId: string;
@@ -20,7 +34,13 @@ export type AnchorProofResult =
     }
   | {
       anchored: false;
-      reason: "disabled" | "failed";
+      /**
+       * `circuit_open` means the dependency circuit refused the call before it
+       * ran: the contract was never touched, the intent was not consumed, and
+       * the worker should hold it for a later probe rather than count an
+       * attempt against it.
+       */
+      reason: "disabled" | "failed" | "circuit_open";
       error?: string;
     };
 
@@ -32,13 +52,13 @@ export type ContractProofStatus =
     }
   | {
       checked: false;
-      reason: "disabled" | "failed";
+      reason: "disabled" | "failed" | "circuit_open";
       error?: string;
     };
 
 @Injectable()
 export class ContractAnchoringService {
-  private readonly logger = new Logger(ContractAnchoringService.name);
+  private readonly logger = new StructuredLogger(ContractAnchoringService.name);
   private readonly enabled: boolean;
   private readonly required: boolean;
   private readonly stellarCliPath: string;
@@ -47,8 +67,23 @@ export class ContractAnchoringService {
   private readonly proofRegistryContractId: string | undefined;
   private readonly issuerAddress: string | undefined;
   private readonly schemaVersion: number;
+  private readonly registry?: CircuitBreakerRegistry;
+  private readonly breakerOptions: {
+    failureThreshold?: number;
+    openDurationMs?: number;
+    halfOpenMaxProbes?: number;
+    successThreshold?: number;
+  };
 
-  constructor(configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    /**
+     * Optional so the existing unit tests (which construct the service with a
+     * config alone) keep working. When present, every contract invocation runs
+     * under a per-network, per-operation circuit breaker (issue #203).
+     */
+    @Optional() registry?: CircuitBreakerRegistry,
+  ) {
     this.enabled = configService.get<boolean>("contractAnchoring.enabled") ?? false;
     this.required = configService.get<boolean>("contractAnchoring.required") ?? false;
     this.stellarCliPath =
@@ -63,6 +98,58 @@ export class ContractAnchoringService {
     );
     this.schemaVersion =
       configService.get<number>("contractAnchoring.schemaVersion") ?? 1;
+    this.registry = registry;
+    this.breakerOptions = {
+      failureThreshold: configService.get<number>(
+        "contractAnchoring.circuitBreaker.failureThreshold",
+      ),
+      openDurationMs: configService.get<number>(
+        "contractAnchoring.circuitBreaker.openDurationMs",
+      ),
+      halfOpenMaxProbes: configService.get<number>(
+        "contractAnchoring.circuitBreaker.halfOpenMaxProbes",
+      ),
+      successThreshold: configService.get<number>(
+        "contractAnchoring.circuitBreaker.successThreshold",
+      ),
+    };
+  }
+
+  /**
+   * State of the circuit governing a contract operation on the current network,
+   * or `closed` when no breaker is wired. Read by the anchoring worker to decide
+   * how many intents it may claim — see its backpressure logic.
+   */
+  circuitState(operation: ContractOperationClass): CircuitState {
+    return this.breakerFor(operation)?.snapshot().state ?? "closed";
+  }
+
+  /** The breaker for a given network operation, created on first use. */
+  private breakerFor(
+    operation: ContractOperationClass,
+  ): CircuitBreaker | undefined {
+    return this.registry?.getOrCreate({
+      name: `${CONTRACT_CIRCUIT_PREFIX}:${this.network}:${operation}`,
+      ...this.breakerOptions,
+    });
+  }
+
+  /**
+   * Runs a CLI invocation under the operation's circuit breaker.
+   *
+   * When the circuit is open the breaker throws {@link CircuitOpenError} before
+   * `run` executes, so the contract is never touched — the backpressure the
+   * worker relies on. A permanent contract error is classified as `ignore` by
+   * {@link classifyContractError} so it never opens the circuit; a transient
+   * RPC/CLI failure is a `trip`.
+   */
+  private guarded<T>(
+    operation: ContractOperationClass,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const breaker = this.breakerFor(operation);
+    if (!breaker) return run();
+    return breaker.execute(run, classifyContractError);
   }
 
   async anchorProof(input: AnchorProofInput): Promise<AnchorProofResult> {
@@ -97,15 +184,21 @@ export class ContractAnchoringService {
     ];
 
     try {
-      const { stdout } = await execFileAsync(this.stellarCliPath, args, {
-        windowsHide: true,
-        timeout: 120_000,
-      });
+      const { stdout } = await this.guarded("register", () =>
+        execFileAsync(this.stellarCliPath, args, {
+          windowsHide: true,
+          timeout: 120_000,
+        }),
+      );
       return {
         anchored: true,
         transactionHash: this.lastOutputLine(stdout),
       };
     } catch (error) {
+      if (error instanceof CircuitOpenError) {
+        return this.circuitOpenResult("Contract anchoring");
+      }
+
       const message = safeCliError(error);
       if (this.required) {
         throw new Error(message);
@@ -118,6 +211,24 @@ export class ContractAnchoringService {
         error: message,
       };
     }
+  }
+
+  /**
+   * Shared handling for an open-circuit refusal.
+   *
+   * In `required` mode the caller (synchronous proof issuance) cannot proceed
+   * without a successful anchor, so an open circuit is surfaced as an error. In
+   * the default asynchronous mode the worker holds the intent for a later probe,
+   * so `circuit_open` is returned without consuming an attempt.
+   */
+  private circuitOpenResult(
+    context: string,
+  ): { anchored: false; reason: "circuit_open" } {
+    if (this.required) {
+      throw new Error(`${context} unavailable: dependency circuit is open`);
+    }
+    this.logger.warn(`${context} skipped: dependency circuit is open`);
+    return { anchored: false, reason: "circuit_open" };
   }
 
   async revokeProof(proofId: string): Promise<AnchorProofResult> {
@@ -154,6 +265,14 @@ export class ContractAnchoringService {
         valid: this.parseBoolean(valid),
       };
     } catch (error) {
+      if (error instanceof CircuitOpenError) {
+        if (this.required) {
+          throw new Error("Contract status check unavailable: circuit is open");
+        }
+        this.logger.warn("Contract status check skipped: circuit is open");
+        return { checked: false, reason: "circuit_open" };
+      }
+
       const message = safeCliError(error);
       if (this.required) {
         throw new Error(message);
@@ -170,19 +289,25 @@ export class ContractAnchoringService {
 
   private async invokeMutation(functionName: string, functionArgs: string[]) {
     try {
-      const { stdout } = await execFileAsync(
-        this.stellarCliPath,
-        this.contractInvokeArgs(functionName, functionArgs, true),
-        {
-          windowsHide: true,
-          timeout: 120_000,
-        },
+      const { stdout } = await this.guarded("revoke", () =>
+        execFileAsync(
+          this.stellarCliPath,
+          this.contractInvokeArgs(functionName, functionArgs, true),
+          {
+            windowsHide: true,
+            timeout: 120_000,
+          },
+        ),
       );
       return {
         anchored: true as const,
         transactionHash: this.lastOutputLine(stdout),
       };
     } catch (error) {
+      if (error instanceof CircuitOpenError) {
+        return this.circuitOpenResult("Contract mutation");
+      }
+
       const message = safeCliError(error);
       if (this.required) {
         throw new Error(message);
@@ -198,13 +323,15 @@ export class ContractAnchoringService {
   }
 
   private async invokeRead(functionName: string, functionArgs: string[]) {
-    const { stdout } = await execFileAsync(
-      this.stellarCliPath,
-      this.contractInvokeArgs(functionName, functionArgs, false),
-      {
-        windowsHide: true,
-        timeout: 60_000,
-      },
+    const { stdout } = await this.guarded("read", () =>
+      execFileAsync(
+        this.stellarCliPath,
+        this.contractInvokeArgs(functionName, functionArgs, false),
+        {
+          windowsHide: true,
+          timeout: 60_000,
+        },
+      ),
     );
     return this.lastOutputLine(stdout);
   }

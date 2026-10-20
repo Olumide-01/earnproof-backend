@@ -23,6 +23,14 @@ function makeConfig() {
       if (key === "paymentEncryptionKey") return ENCRYPTION_KEY;
       throw new Error(`Unexpected config key: ${key}`);
     }),
+    get: jest.fn(() => undefined),
+  };
+}
+
+/** No webhook in these existing tests requires mTLS, so this is never consulted. */
+function makeNoMtlsCertificateService() {
+  return {
+    selectActiveCertificate: jest.fn().mockResolvedValue(null),
   };
 }
 
@@ -31,7 +39,8 @@ function makeEnvelope(overrides: Partial<WebhookEnvelope> = {}): WebhookEnvelope
     specVersion: "1",
     id: "event_abc",
     event: "proof.created",
-    createdAt: new Date().toISOString(),
+    schemaVersion: "1",
+    createdAt: "2026-09-01T00:00:00.000Z",
     data: {
       proofId: "proof_1",
       proofType: "MINIMUM_INCOME",
@@ -42,10 +51,10 @@ function makeEnvelope(overrides: Partial<WebhookEnvelope> = {}): WebhookEnvelope
       assetIssuer: null,
       periodStart: null,
       periodEnd: null,
-      expiresAt: new Date(Date.now() + 86400_000).toISOString(),
+      expiresAt: "2027-09-01T00:00:00.000Z",
       credentialHash: "sha256:abc",
       contractTransactionHash: null,
-      issuedAt: new Date().toISOString(),
+      issuedAt: "2026-09-01T00:00:00.000Z",
     },
     ...overrides,
   };
@@ -75,6 +84,8 @@ describe("WebhookDeliveryService", () => {
         webhookId: "webhook_1",
         eventType: "proof.created",
         eventId: "event_abc",
+        schemaVersion: "1",
+        payloadBody: JSON.stringify(makeEnvelope({ id: "event_abc" })),
         attempt: 1,
         status: WebhookDeliveryStatus.PENDING,
         replayOf: null,
@@ -97,16 +108,12 @@ describe("WebhookDeliveryService", () => {
       const service = new WebhookDeliveryService(
         prisma as never,
         new WebhookSigningService(),
+        makeNoMtlsCertificateService() as never,
         makeConfig() as never,
       );
 
       // Bypass onModuleInit startup scan
-      await (service as unknown as { runDelivery: Function }).runDelivery(
-        deliveryId,
-        makeEnvelope(),
-        "https://example.com/hook",
-        secretEncrypted,
-      );
+      await (service as unknown as { runDelivery: Function }).runDelivery(deliveryId);
 
       const updated = deliveries.get(deliveryId) as Record<string, unknown>;
       expect(updated.status).toBe(WebhookDeliveryStatus.SUCCESS);
@@ -128,6 +135,8 @@ describe("WebhookDeliveryService", () => {
         webhookId: "webhook_1",
         eventType: "proof.created",
         eventId: "event_abc",
+        schemaVersion: "1",
+        payloadBody: JSON.stringify(makeEnvelope({ id: "event_abc" })),
         attempt: 1,
         status: WebhookDeliveryStatus.PENDING,
         replayOf: null,
@@ -149,15 +158,11 @@ describe("WebhookDeliveryService", () => {
       const service = new WebhookDeliveryService(
         prisma as never,
         new WebhookSigningService(),
+        makeNoMtlsCertificateService() as never,
         makeConfig() as never,
       );
 
-      await (service as unknown as { runDelivery: Function }).runDelivery(
-        deliveryId,
-        makeEnvelope(),
-        "https://example.com/hook",
-        secretEncrypted,
-      );
+      await (service as unknown as { runDelivery: Function }).runDelivery(deliveryId);
 
       // Original delivery marked FAILED
       const original = deliveries.get(deliveryId) as Record<string, unknown>;
@@ -186,6 +191,8 @@ describe("WebhookDeliveryService", () => {
         webhookId: "webhook_1",
         eventType: "proof.created",
         eventId: "event_abc",
+        schemaVersion: "1",
+        payloadBody: JSON.stringify(makeEnvelope({ id: "event_abc" })),
         attempt: 5, // already at max
         status: WebhookDeliveryStatus.PENDING,
         replayOf: null,
@@ -207,15 +214,11 @@ describe("WebhookDeliveryService", () => {
       const service = new WebhookDeliveryService(
         prisma as never,
         new WebhookSigningService(),
+        makeNoMtlsCertificateService() as never,
         makeConfig() as never,
       );
 
-      await (service as unknown as { runDelivery: Function }).runDelivery(
-        deliveryId,
-        makeEnvelope(),
-        "https://example.com/hook",
-        secretEncrypted,
-      );
+      await (service as unknown as { runDelivery: Function }).runDelivery(deliveryId);
 
       // Still only 1 delivery row — no new retry row created
       expect(deliveries.size).toBe(1);
@@ -237,6 +240,8 @@ describe("WebhookDeliveryService", () => {
         webhookId: "webhook_1",
         eventType: "proof.created",
         eventId: "event_same",
+        schemaVersion: "1",
+        payloadBody: JSON.stringify(makeEnvelope({ id: "event_same" })),
         attempt: 1,
         status: WebhookDeliveryStatus.PENDING,
         replayOf: null,
@@ -258,15 +263,11 @@ describe("WebhookDeliveryService", () => {
       const service = new WebhookDeliveryService(
         prisma as never,
         new WebhookSigningService(),
+        makeNoMtlsCertificateService() as never,
         makeConfig() as never,
       );
 
-      await (service as unknown as { runDelivery: Function }).runDelivery(
-        deliveryId,
-        makeEnvelope({ id: "event_same" }),
-        "https://example.com/hook",
-        secretEncrypted,
-      );
+      await (service as unknown as { runDelivery: Function }).runDelivery(deliveryId);
 
       const retryRow = [...deliveries.values()].find(
         (d) => (d as Record<string, unknown>).id !== deliveryId,
@@ -306,6 +307,8 @@ describe("WebhookDeliveryService", () => {
           webhookId: "webhook_1",
           eventType: "proof.created",
           eventId: "event_ssrf",
+          schemaVersion: "1",
+          payloadBody: JSON.stringify(makeEnvelope({ id: "event_ssrf" })),
           attempt: 1,
           status: WebhookDeliveryStatus.PENDING,
           replayOf: null,
@@ -324,15 +327,11 @@ describe("WebhookDeliveryService", () => {
         const service = new WebhookDeliveryService(
           prisma as never,
           new WebhookSigningService(),
+          makeNoMtlsCertificateService() as never,
           makeConfig() as never,
         );
 
-        await (service as unknown as { runDelivery: Function }).runDelivery(
-          deliveryId,
-          makeEnvelope(),
-          blockedUrl,
-          secretEncrypted,
-        );
+        await (service as unknown as { runDelivery: Function }).runDelivery(deliveryId);
 
         expect(global.fetch).not.toHaveBeenCalled();
 
@@ -364,6 +363,8 @@ describe("WebhookDeliveryService", () => {
         webhookId: "webhook_1",
         eventType: "proof.created",
         eventId: "event_r",
+        schemaVersion: "1",
+        payloadBody: JSON.stringify(makeEnvelope({ id: "event_r" })),
         attempt: 1,
         status: WebhookDeliveryStatus.PENDING,
         replayOf: null,
@@ -385,15 +386,11 @@ describe("WebhookDeliveryService", () => {
       const service = new WebhookDeliveryService(
         prisma as never,
         new WebhookSigningService(),
+        makeNoMtlsCertificateService() as never,
         makeConfig() as never,
       );
 
-      await (service as unknown as { runDelivery: Function }).runDelivery(
-        deliveryId,
-        makeEnvelope(),
-        "https://example.com/hook",
-        secretEncrypted,
-      );
+      await (service as unknown as { runDelivery: Function }).runDelivery(deliveryId);
 
       const storedRow = deliveries.get(deliveryId) as Record<string, unknown>;
       const rowJson = JSON.stringify(storedRow);
@@ -418,6 +415,8 @@ describe("WebhookDeliveryService", () => {
         webhookId: "webhook_1",
         eventType: "proof.created",
         eventId: "event_t",
+        schemaVersion: "1",
+        payloadBody: JSON.stringify(makeEnvelope({ id: "event_t" })),
         attempt: 1,
         status: WebhookDeliveryStatus.PENDING,
         replayOf: null,
@@ -440,15 +439,11 @@ describe("WebhookDeliveryService", () => {
       const service = new WebhookDeliveryService(
         prisma as never,
         new WebhookSigningService(),
+        makeNoMtlsCertificateService() as never,
         makeConfig() as never,
       );
 
-      await (service as unknown as { runDelivery: Function }).runDelivery(
-        deliveryId,
-        makeEnvelope(),
-        "https://example.com/hook",
-        secretEncrypted,
-      );
+      await (service as unknown as { runDelivery: Function }).runDelivery(deliveryId);
 
       const storedRow = deliveries.get(deliveryId) as Record<string, unknown>;
       expect(typeof storedRow.responseBody).toBe("string");
@@ -483,6 +478,8 @@ describe("WebhookDeliveryService", () => {
         webhookId: "webhook_1",
         eventType: "proof.created",
         eventId: "event_rot",
+        schemaVersion: "1",
+        payloadBody: JSON.stringify(makeEnvelope({ id: "event_rot" })),
         attempt: 1,
         status: WebhookDeliveryStatus.PENDING,
         replayOf: null,
@@ -507,16 +504,12 @@ describe("WebhookDeliveryService", () => {
       const service = new WebhookDeliveryService(
         prisma as never,
         signing,
+        makeNoMtlsCertificateService() as never,
         makeConfig() as never,
       );
 
-      // Pass the OLD cached secret — but the service should re-read from webhook row
-      await (service as unknown as { runDelivery: Function }).runDelivery(
-        deliveryId,
-        makeEnvelope(),
-        undefined, // no cached URL
-        undefined, // no cached secret → forces DB read
-      );
+      // The service always re-reads the secret from the live webhook row.
+      await (service as unknown as { runDelivery: Function }).runDelivery(deliveryId);
 
       // Signature in the sent request should be verifiable with the NEW secret
       const sigHeader = capturedHeaders["X-EarnProof-Signature"];
@@ -524,9 +517,13 @@ describe("WebhookDeliveryService", () => {
       const deliveryHeader = capturedHeaders["X-EarnProof-Delivery"];
       expect(sigHeader).toMatch(/^v1=/);
 
-      // The old secret should NOT verify the signature
-      const body = JSON.stringify(makeEnvelope());
+      // The signature covers the persisted body and verifies only with the
+      // NEW secret.
+      const body = JSON.stringify(makeEnvelope({ id: "event_rot" }));
       const ts = Number(tsHeader);
+      expect(
+        signing.verify("new-secret", ts, deliveryHeader, body, sigHeader),
+      ).toBe(true);
       expect(
         signing.verify("old-secret", ts, deliveryHeader, body, sigHeader),
       ).toBe(false);
@@ -548,6 +545,8 @@ describe("WebhookDeliveryService", () => {
         eventType: "proof.created",
         eventId: "event_replay",
         payload: makeEnvelope({ id: "event_replay" }),
+        schemaVersion: "1",
+        payloadBody: JSON.stringify(makeEnvelope({ id: "event_replay" })),
         attempt: 1,
         status: WebhookDeliveryStatus.FAILED,
         replayOf: null,
@@ -568,6 +567,7 @@ describe("WebhookDeliveryService", () => {
       const service = new WebhookDeliveryService(
         prisma as never,
         new WebhookSigningService(),
+        makeNoMtlsCertificateService() as never,
         makeConfig() as never,
       );
 
@@ -595,6 +595,8 @@ describe("WebhookDeliveryService", () => {
         webhookId: "webhook_disabled",
         eventType: "proof.created",
         eventId: "event_d",
+        schemaVersion: "1",
+        payloadBody: JSON.stringify(makeEnvelope({ id: "event_d" })),
         attempt: 1,
         status: WebhookDeliveryStatus.SUCCESS,
         replayOf: null,
@@ -613,6 +615,7 @@ describe("WebhookDeliveryService", () => {
       const service = new WebhookDeliveryService(
         prisma as never,
         new WebhookSigningService(),
+        makeNoMtlsCertificateService() as never,
         makeConfig() as never,
       );
 
@@ -627,11 +630,77 @@ describe("WebhookDeliveryService", () => {
       const service = new WebhookDeliveryService(
         prisma as never,
         new WebhookSigningService(),
+        makeNoMtlsCertificateService() as never,
         makeConfig() as never,
       );
 
       await expect(service.replay("non_existent", "user_x")).rejects.toThrow(
         "WebhookDelivery not found",
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Organization archival
+  // -------------------------------------------------------------------------
+  describe("organization archival", () => {
+    it("fails a scheduled delivery without sending it once the organization is archived", async () => {
+      const secretEncrypted = makeEncryptedSecret();
+      const deliveries = new Map<string, Record<string, unknown>>();
+      const archivedWebhook = {
+        id: "webhook_archived",
+        url: "https://example.com/hook",
+        secretEncrypted,
+        status: "ACTIVE",
+        organization: { archivedAt: new Date("2026-01-01T00:00:00.000Z") },
+      };
+      const prisma = buildPrisma(deliveries, [archivedWebhook]);
+      deliveries.set("delivery_archived", {
+        id: "delivery_archived",
+        webhookId: "webhook_archived",
+        eventType: "proof.created",
+        eventId: "event_archived",
+        attempt: 2,
+        status: WebhookDeliveryStatus.PENDING,
+        replayOf: null,
+        createdAt: new Date(),
+      });
+      const fetchMock = jest.fn();
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      const service = new WebhookDeliveryService(
+        prisma as never,
+        new WebhookSigningService(),
+        makeConfig() as never,
+      );
+      await (service as unknown as { runDelivery: Function }).runDelivery(
+        "delivery_archived",
+        makeEnvelope(),
+      );
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(deliveries.get("delivery_archived")).toMatchObject({
+        status: WebhookDeliveryStatus.FAILED,
+        failureReason: "organization archived before delivery",
+      });
+    });
+
+    it("enqueues events only for organizations that are not archived", async () => {
+      const prisma = buildPrisma(new Map(), []);
+      const service = new WebhookDeliveryService(
+        prisma as never,
+        new WebhookSigningService(),
+        makeConfig() as never,
+      );
+
+      await service.enqueueForUser("user_1", "proof.created" as never, {} as never);
+
+      expect(prisma.user.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: {
+            organizations: expect.objectContaining({ where: { archivedAt: null } }),
+          },
+        }),
       );
     });
   });

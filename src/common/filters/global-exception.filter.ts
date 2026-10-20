@@ -65,7 +65,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     const res = ctx.getResponse<Response>();
 
     const requestId = this.resolveRequestId(req);
-    const { statusCode, code, message, violations } = this.classify(exception);
+    const { statusCode, code, message, violations, currentRevision } = this.classify(exception);
 
     // Log internal detail only server-side, never in the response.
     if (statusCode >= 500) {
@@ -81,6 +81,9 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     if (violations?.length) {
       body.violations = violations;
     }
+    if (currentRevision !== undefined) {
+      body.currentRevision = currentRevision;
+    }
 
     // Always echo the request-ID back so clients correlate even on errors that
     // arrive before the interceptor has had a chance to set the header.
@@ -95,6 +98,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     code: ApiErrorCode;
     message: string;
     violations?: FieldViolationDto[];
+    currentRevision?: number;
   } {
     // ── NestJS HTTP exceptions ───────────────────────────────────────────────
     if (exception instanceof HttpException) {
@@ -159,6 +163,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     code: ApiErrorCode;
     message: string;
     violations?: FieldViolationDto[];
+    currentRevision?: number;
   } {
     const status = exception.getStatus();
     const raw = exception.getResponse();
@@ -168,6 +173,16 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         statusCode: status,
         code: raw.code,
         message: raw.message,
+      };
+    }
+
+    // Check for ConflictException with currentRevision
+    if (status === HttpStatus.CONFLICT && this.isConflictErrorResponse(raw)) {
+      return {
+        statusCode: status,
+        code: raw.code,
+        message: raw.message,
+        currentRevision: raw.currentRevision,
       };
     }
 
@@ -323,6 +338,19 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       typeof response.message === "string" &&
       typeof response.code === "string" &&
       Object.values(ApiErrorCode).includes(response.code as ApiErrorCode)
+    );
+  }
+
+  private isConflictErrorResponse(
+    value: unknown,
+  ): value is { code: ApiErrorCode; message: string; currentRevision: number } {
+    if (!value || typeof value !== "object") return false;
+    const response = value as Record<string, unknown>;
+    return (
+      typeof response.message === "string" &&
+      typeof response.code === "string" &&
+      response.code === ApiErrorCode.CONFLICT &&
+      typeof response.currentRevision === "number"
     );
   }
 

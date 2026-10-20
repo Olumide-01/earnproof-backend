@@ -107,6 +107,8 @@ Defaulted, but worth setting explicitly in production:
 | `STELLAR_NETWORK` | `testnet` | Mainnet is not supported yet. |
 | `STELLAR_HORIZON_URL` | `https://horizon-testnet.stellar.org` | Must match the network passphrase. |
 | `STELLAR_NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | Determines signature validation. |
+| `STELLAR_FINALITY_HISTORY_LEDGERS` | `17280` | Ledger window behind the sync checkpoint that is held and re-verified on divergence. See [ledger finality](ledger-finality.md). |
+| `STELLAR_FINALITY_RECONCILIATION_MAX_PAGES` | `10` | Horizon pages one reconciliation read may walk. |
 | `CONTRACT_ANCHORING_ENABLED` | `false` | Requires the Stellar CLI, a registry contract ID and an issuer address when enabled. |
 | `CONTRACT_ANCHORING_REQUIRED` | `false` | When true, proof creation fails if on-chain registration fails. |
 

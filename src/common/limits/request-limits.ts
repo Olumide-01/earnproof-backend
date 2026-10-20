@@ -34,7 +34,7 @@ export const GLOBAL_BODY_LIMIT_BYTES = 64 * KB;
 /**
  * Route-specific overrides, matched by path prefix, longest prefix first.
  *
- * Only two exist, and both tighten rather than loosen:
+ * All tighten rather than loosen:
  *
  * - Authentication is unauthenticated and therefore the cheapest place to
  *   attack. A challenge or verification carries an address, an id and a
@@ -43,6 +43,10 @@ export const GLOBAL_BODY_LIMIT_BYTES = 64 * KB;
  *   document. Its DTO caps the credential at 32 KB, so the transport limit sits
  *   just above that; a larger body cannot become a valid request and there is
  *   no reason to parse it.
+ * - CSP violation reports are unauthenticated and carry four closed-enum
+ *   fields plus a short version string — a legitimate report is a few dozen
+ *   bytes. 2 KB is generous by nearly two orders of magnitude while bounding
+ *   what a flood of reports can cost to merely parse.
  */
 export const ROUTE_BODY_LIMITS: ReadonlyArray<{
   readonly prefix: string;
@@ -50,6 +54,7 @@ export const ROUTE_BODY_LIMITS: ReadonlyArray<{
 }> = [
   { prefix: "/api/v1/auth", bytes: 8 * KB },
   { prefix: "/api/v1/credentials/verify", bytes: 40 * KB },
+  { prefix: "/api/v1/security/csp-reports", bytes: 2 * KB },
 ];
 
 /** The body limit that applies to a path. */
@@ -149,4 +154,54 @@ export const FIELD_LIMITS = {
   /** Free-form metadata objects, by serialised size and nesting depth. */
   metadataBytes: 8 * KB,
   metadataDepth: 5,
+  /**
+   * A private, free-form revocation reason.
+   *
+   * Long enough for an operator note, short enough that it cannot be used to
+   * smuggle an unbounded document into an audit-log row.
+   */
+  revocationReason: 500,
+  /**
+   * Proof ids per batch verification request.
+   *
+   * A relying party reconciling a page of proofs verifies tens at a time, not
+   * hundreds; 50 keeps the fan-out to storage and the anchoring contract
+   * bounded while covering every realistic dashboard refresh. The batch is
+   * charged this many throttling tokens, so the cap and the rate limit together
+   * bound the work one client can demand.
+   */
+  proofIdsPerBatch: 50,
+  /**
+   * Credentials per batch verification request.
+   *
+   * Each credential is an independent document, so the count is lower than the
+   * proof-id cap: 20 documents is a generous page while keeping the aggregate
+   * body within a bound a small container can parse and verify inside one
+   * request deadline.
+   */
+  credentialsPerBatch: 20,
+  /**
+   * Total serialised bytes accepted by the batch credential route.
+   *
+   * Sits just under the batch route's transport limit (the shared
+   * `/api/v1/credentials/verify` route limit of 40 KB), so a batch too large to
+   * be valid is refused before verification runs, while every route limit stays
+   * at or below the 64 KB global body limit. A legitimate batch carries small
+   * documents — 20 typical credentials are well under this — so the bound
+   * constrains abuse, not real requests.
+   */
+  batchCredentialsBytes: 36 * KB,
+  /** SHA256 hashes (sha256:hex...) */
+  hash: 100,
+  /** Signed credential payloads for attestations */
+  credentialBytes: 32 * KB,
+  credentialDepth: 5,
+  /**
+   * Frontend-reported app release/version string on a CSP violation report.
+   *
+   * Mirrors the deployment manifest's own version-string bound
+   * (`[A-Za-z0-9][A-Za-z0-9._+-]{0,63}`) so a release identifier can never
+   * become a vector for an unbounded or binary value.
+   */
+  cspRelease: 64,
 } as const;

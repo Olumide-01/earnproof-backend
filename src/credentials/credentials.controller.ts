@@ -1,23 +1,46 @@
 import {
   Body,
   Controller,
+  Get,
+  Headers,
   HttpCode,
   HttpStatus,
   Post,
   UseInterceptors,
+  Res,
+  Optional,
 } from "@nestjs/common";
 import {
+  ApiBadRequestResponse,
   ApiBody,
+  ApiOkResponse,
   ApiOperation,
+  ApiPayloadTooLargeResponse,
+  ApiRequestTimeoutResponse,
   ApiResponse,
   ApiTags,
+  ApiTooManyRequestsResponse,
 } from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
+import { Request } from "express";
 import { ApiErrorDto } from "../common/dto/api-error.dto";
+import { PublicRoute } from "../common/decorators/authorization-policy.decorator";
 import { RequestTimeoutInterceptor } from "../common/interceptors/request-timeout.interceptor";
+import { ThrottleCost } from "../common/rate-limit/throttle-cost.decorator";
+import { CredentialVerificationKeyService } from "../common/crypto/credential-verification-key.service";
+import { Response } from "express";
 import { CredentialsService } from "./credentials.service";
+import { EvidenceBundleService } from "./evidence-bundle.service";
+import {
+  GenerateEvidenceBundleDto,
+  SignedEvidenceBundle,
+  VerifyEvidenceBundleDto,
+  VerifyEvidenceBundleResponseDto,
+} from "./dto/evidence-bundle.dto";
 import { VerifyCredentialResponseDto } from "./dto/verify-credential-response.dto";
 import { VerifyCredentialDto } from "./dto/verify-credential.dto";
+import { VerifyCredentialsBatchResponseDto } from "./dto/verify-credentials-batch-response.dto";
+import { VerifyCredentialsBatchDto } from "./dto/verify-credentials-batch.dto";
 
 /**
  * A worked example of a credential, used to document the request body.
@@ -70,10 +93,48 @@ const EXAMPLE_CREDENTIAL = {
 @ApiTags("credentials")
 @Controller("credentials")
 export class CredentialsController {
-  constructor(private readonly credentialsService: CredentialsService) {}
+  constructor(
+    private readonly credentialsService: CredentialsService,
+    @Optional()
+    private readonly credentialVerificationKeyService?: CredentialVerificationKeyService,
+    @Optional()
+    private readonly evidenceBundleService?: EvidenceBundleService,
+  ) {}
+
+  @Get("keys")
+  @ApiOperation({
+    summary: "Discover credential verification keys",
+    description:
+      "Returns the public Ed25519 keys used to verify EarnProof credentials. " +
+      "Active and overlap keys are published; private key material is never exposed.",
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: "Deterministically ordered public verification keys.",
+  })
+  getVerificationKeys(
+    @Headers("if-none-match") ifNoneMatch: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    if (!this.credentialVerificationKeyService) {
+      throw new Error("Credential verification keys are not configured");
+    }
+
+    const etag = this.credentialVerificationKeyService.getEtag();
+    response.setHeader("Cache-Control", "public, max-age=300, must-revalidate");
+    response.setHeader("ETag", etag);
+
+    if (ifNoneMatch === etag) {
+      response.status(HttpStatus.NOT_MODIFIED);
+      return;
+    }
+
+    return this.credentialVerificationKeyService.getPublicKeySet();
+  }
 
   /** Verify a portable credential submitted by a third party. */
   @Post("verify")
+  @PublicRoute()
   @ApiOperation({
     summary: "Verify a portable EarnProof credential",
     description:
@@ -115,19 +176,95 @@ export class CredentialsController {
       },
     },
   })
-  @ApiResponse({
-    status: HttpStatus.OK,
+  @ApiOkResponse({
     description:
       "The credential was processed. Read `result` for the verdict — success " +
       "here means the check ran, not that the credential is valid.",
     type: VerifyCredentialResponseDto,
   })
-  @ApiResponse({
-    status: HttpStatus.BAD_REQUEST,
+  @ApiBadRequestResponse({
     description:
       "The submission could not be verified: not an object, larger than 32 KB, " +
       "nested deeper than 5 levels, or structurally malformed for its declared " +
       "schema version.",
+    type: ApiErrorDto,
+  })
+  @ApiRequestTimeoutResponse({
+    description: "Verification did not complete within the request deadline.",
+    type: ApiErrorDto,
+  })
+  @ApiPayloadTooLargeResponse({
+    description:
+      "The request body exceeded the transport limit for this route and was " +
+      "refused before it was parsed.",
+    type: ApiErrorDto,
+  })
+  @ApiTooManyRequestsResponse({
+    description: "Rate limit exceeded: more than 10 verifications in a minute.",
+    type: ApiErrorDto,
+  })
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @UseInterceptors(RequestTimeoutInterceptor)
+  @HttpCode(HttpStatus.OK)
+  verifyCredential(
+    @Body() body: VerifyCredentialDto,
+  ): Promise<VerifyCredentialResponseDto> {
+    return this.credentialsService.verifyCredential(body.credential);
+  }
+
+  /** Verify a bounded batch of portable credentials in one request. */
+  @Post("verify/batch")
+  @ApiOperation({
+    summary: "Verify a batch of portable EarnProof credentials",
+    description:
+      "Verifies up to a configured maximum of credentials in one request and " +
+      "returns one result per item, in submission order. Each item runs through " +
+      "the same checks as the single-credential endpoint, so a batch never " +
+      "accepts a credential the single route would reject.\n\n" +
+      "A `200` means the batch was accepted, not that every credential is valid: " +
+      "read each item's `result`. A single unusable item is reported against its " +
+      "own index with an `error` and never hides the other items' outcomes. A " +
+      "`4xx` means the batch itself was unusable — empty, over the item cap, or " +
+      "larger than the aggregate byte limit.\n\n" +
+      "This route is rate limited by total item cost: a batch of N credentials " +
+      "consumes N of the same per-minute budget the single route uses, so a " +
+      "batch cannot buy a client more verification throughput than issuing the " +
+      "same requests one at a time.",
+  })
+  @ApiBody({
+    type: VerifyCredentialsBatchDto,
+    description:
+      "An array of credential documents, each exactly as issued including its " +
+      "`proof` block. Results come back in the same order.",
+    examples: {
+      mixed: {
+        summary: "One issued credential and one tampered credential",
+        value: {
+          credentials: [
+            EXAMPLE_CREDENTIAL,
+            {
+              ...EXAMPLE_CREDENTIAL,
+              claim: {
+                ...EXAMPLE_CREDENTIAL.claim,
+                thresholdAmount: "5000.0000000",
+              },
+            },
+          ],
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description:
+      "The batch was processed. Each entry in `results` carries its own verdict.",
+    type: VerifyCredentialsBatchResponseDto,
+  })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description:
+      "The batch itself could not be accepted: empty, more items than the cap, " +
+      "or larger than the aggregate byte limit.",
     type: ApiErrorDto,
   })
   @ApiResponse({
@@ -144,15 +281,66 @@ export class CredentialsController {
   })
   @ApiResponse({
     status: HttpStatus.TOO_MANY_REQUESTS,
-    description: "Rate limit exceeded: more than 10 verifications in a minute.",
+    description:
+      "Rate limit exceeded: the batch's item cost exhausted the per-minute budget.",
     type: ApiErrorDto,
   })
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @ThrottleCost((request: Request) => {
+    const credentials = (request.body as { credentials?: unknown[] })
+      ?.credentials;
+    return Array.isArray(credentials) ? credentials.length : 1;
+  })
   @UseInterceptors(RequestTimeoutInterceptor)
   @HttpCode(HttpStatus.OK)
-  verifyCredential(
-    @Body() body: VerifyCredentialDto,
-  ): Promise<VerifyCredentialResponseDto> {
-    return this.credentialsService.verifyCredential(body.credential);
+  verifyCredentialsBatch(
+    @Body() body: VerifyCredentialsBatchDto,
+  ): Promise<VerifyCredentialsBatchResponseDto> {
+    return this.credentialsService.verifyCredentialsBatch(body.credentials);
+  }
+
+  @ApiOperation({
+    summary: "Generate a signed verification evidence bundle",
+    description:
+      "Generates a portable, tamper-evident manifest binding public proof outputs " +
+      "to verified contract state, Stellar evidence, and freshness without exposing private records.",
+  })
+  @ApiResponse({
+    status: HttpStatus.CREATED,
+    description: "Signed verification evidence bundle generated.",
+  })
+  @PublicRoute()
+  @Post("evidence-bundle/generate")
+  @HttpCode(HttpStatus.CREATED)
+  generateEvidenceBundle(
+    @Body() body: GenerateEvidenceBundleDto,
+  ): Promise<SignedEvidenceBundle> {
+    if (!this.evidenceBundleService) {
+      throw new Error("EvidenceBundleService is not configured");
+    }
+    return this.evidenceBundleService.generateBundle(body.proofId, body.network);
+  }
+
+  @ApiOperation({
+    summary: "Verify a signed verification evidence bundle",
+    description:
+      "Public verification for portable signed evidence bundles. Fails on tampering, " +
+      "unsupported versions, network mismatch, expired evidence, or retired key IDs.",
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: "Verification verdict and details.",
+    type: VerifyEvidenceBundleResponseDto,
+  })
+  @PublicRoute()
+  @Post("evidence-bundle/verify")
+  @HttpCode(HttpStatus.OK)
+  verifyEvidenceBundle(
+    @Body() body: VerifyEvidenceBundleDto,
+  ): Promise<VerifyEvidenceBundleResponseDto> {
+    if (!this.evidenceBundleService) {
+      throw new Error("EvidenceBundleService is not configured");
+    }
+    return this.evidenceBundleService.verifyBundle(body.bundle, body.expectedNetwork);
   }
 }

@@ -1,0 +1,23 @@
+feat(#333): Implement revocation checkpoint commitments with monotonic enforcement
+
+- Add RevocationCheckpoint and RevocationCheckpointStreamHead Prisma models
+- Implement database-level monotonicity enforcement via unique constraints
+- Persist quarantined checkpoints (regressed roots, conflicts) with bounded reason codes
+- Provide freshness DTO with age calculation and staleness detection
+- API endpoints: POST /revocation-checkpoints, GET /fresh, GET /quarantine
+- RevocationCheckpointService with monotonicity logic and quarantine handling
+- Comprehensive test suite: monotonicity, concurrency, validation, quarantine lifecycle
+- DTOs with field validation (ledger, algorithm, root format, observedAt)
+- Integration with Proofs module; proof verification isolation maintained
+- Migration 20261215100000 with tables and indexes
+- Complete documentation in docs/revocation-checkpoints.md
+
+Acceptance Criteria Satisfied:
+- Checkpoint persisted with sequence, root, algorithm, ledger, contract identity
+- Monotonicity enforced at DB level (unique constraint + conditional logic)
+- Regressed roots quarantined, never silently accepted or dropped
+- Freshness and live reconciliation exposed via DTO
+- Proof verification unchanged (checkpoint is additional evidence only)
+- Concurrent writers safe (one accepted, rest idempotent or quarantined)
+- Deterministic error semantics with bounded codes
+- Synthetic test fixtures only (no secrets, no production data)

@@ -350,20 +350,20 @@ describe("Configuration Validation (env.validation.ts)", () => {
         expect(() => validateEnv(config)).not.toThrow();
       });
 
-      it("fails when window exceeds 24 hours", () => {
+      it("fails when window exceeds 1 hour (3600000ms)", () => {
         const config = {
           ...baseConfig,
-          AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS: "86400001", // > 24h
+          AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS: "3600001",
         };
         expect(() => validateEnv(config)).toThrow(
-          /AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS.*exceed 24 hours/,
+          /AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS.*exceed 1 hour/,
         );
       });
 
-      it("accepts exactly 24 hours", () => {
+      it("accepts exactly 1 hour (3600000ms)", () => {
         const config = {
           ...baseConfig,
-          AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS: "86400000",
+          AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS: "3600000",
         };
         expect(() => validateEnv(config)).not.toThrow();
       });
@@ -545,6 +545,49 @@ describe("Configuration Validation (env.validation.ts)", () => {
         /AUTH_CHALLENGE_CLEANUP_CRON.*valid cron/,
       );
     });
+
+    it("fails on cron with invalid hour (>23)", () => {
+      const config = { ...baseConfig, AUTH_SESSION_CLEANUP_CRON: "0 25 * * *" };
+      expect(() => validateEnv(config)).toThrow(
+        /AUTH_SESSION_CLEANUP_CRON.*valid cron/,
+      );
+    });
+
+    it("fails on cron with invalid minute (>59)", () => {
+      const config = { ...baseConfig, AUTH_SESSION_CLEANUP_CRON: "75 * * * *" };
+      expect(() => validateEnv(config)).toThrow(
+        /AUTH_SESSION_CLEANUP_CRON.*valid cron/,
+      );
+    });
+
+    it("fails on cron with invalid step (*/0)", () => {
+      const config = { ...baseConfig, AUTH_SESSION_CLEANUP_CRON: "*/0 * * * *" };
+      expect(() => validateEnv(config)).toThrow(
+        /AUTH_SESSION_CLEANUP_CRON.*valid cron/,
+      );
+    });
+
+    it("fails on cron with both day-of-month and day-of-week restricted", () => {
+      const config = { ...baseConfig, AUTH_SESSION_CLEANUP_CRON: "0 0 15 * 1" };
+      expect(() => validateEnv(config)).toThrow(
+        /AUTH_SESSION_CLEANUP_CRON.*valid cron/,
+      );
+    });
+
+    it("accepts cron with 6 fields (with seconds)", () => {
+      const config = {
+        ...baseConfig,
+        AUTH_SESSION_CLEANUP_CRON: "30 0 0 * * *",
+      };
+      expect(() => validateEnv(config)).not.toThrow();
+    });
+
+    it("fails on cron with 7 fields (too many)", () => {
+      const config = { ...baseConfig, AUTH_SESSION_CLEANUP_CRON: "0 0 0 * * * *" };
+      expect(() => validateEnv(config)).toThrow(
+        /AUTH_SESSION_CLEANUP_CRON.*valid cron/,
+      );
+    });
   });
 
   // ──────────────────────────────────────────────────────────────────────
@@ -713,7 +756,7 @@ describe("Configuration Validation (env.validation.ts)", () => {
         AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS: "7200000", // 2 hours
       };
       expect(() => validateEnv(config)).toThrow(
-        /AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS.*exceeds 1 hour.*production/,
+        /AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS.*exceed 1 hour/,
       );
     });
 
@@ -900,6 +943,182 @@ describe("Configuration Validation (env.validation.ts)", () => {
       expect(result.CONTRACT_ANCHORING_ENABLED).toBe("false");
       expect(result.CONTRACT_ANCHORING_REQUIRED).toBe("false");
       expect(result.ISSUER_REGISTRY_ENABLED).toBe("false");
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // VERSIONED PAYMENT ENCRYPTION KEYS (PAYMENT_ENCRYPTION_KEY_V*)
+  // ──────────────────────────────────────────────────────────────────────
+
+  describe("PAYMENT_ENCRYPTION_KEY_V* (dynamically numbered)", () => {
+    const baseConfig = {
+      NODE_ENV: "development",
+      DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
+      REDIS_URL: "redis://localhost:6379",
+      SESSION_SECRET: "dev-session-secret-8-chars",
+      CREDENTIAL_SIGNING_SECRET: "dev-cred-secret-8-chars",
+      PAYMENT_ENCRYPTION_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+    };
+
+    it("accepts valid versioned payment encryption keys", () => {
+      const config = {
+        ...baseConfig,
+        PAYMENT_ENCRYPTION_KEY_VERSION: "1",
+        PAYMENT_ENCRYPTION_KEY_V0: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+        PAYMENT_ENCRYPTION_KEY_V1: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWE=",
+      };
+      expect(() => validateEnv(config)).not.toThrow();
+    });
+
+    it("rejects a payment key that is not 32 bytes", () => {
+      const config = {
+        ...baseConfig,
+        PAYMENT_ENCRYPTION_KEY_V0: "dGVzdA==", // "test" = 4 bytes
+      };
+      expect(() => validateEnv(config)).toThrow(/PAYMENT_ENCRYPTION_KEY_V0/);
+    });
+
+    it("ignores empty-string versioned payment keys (treated as absent)", () => {
+      const config = {
+        ...baseConfig,
+        PAYMENT_ENCRYPTION_KEY_V0: "",
+      };
+      expect(() => validateEnv(config)).not.toThrow();
+    });
+
+    it("accepts hex-encoded versioned payment keys", () => {
+      const config = {
+        ...baseConfig,
+        PAYMENT_ENCRYPTION_KEY_V0:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      };
+      expect(() => validateEnv(config)).not.toThrow();
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // PRESERVED RETENTION VARIABLES (RETENTION_PROOF_DAYS, etc.)
+  // ──────────────────────────────────────────────────────────────────────
+
+  describe("Preserved retention variables (never auto-swept)", () => {
+    const baseConfig = {
+      NODE_ENV: "development",
+      DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
+      REDIS_URL: "redis://localhost:6379",
+      SESSION_SECRET: "dev-session-secret-8-chars",
+      CREDENTIAL_SIGNING_SECRET: "dev-cred-secret-8-chars",
+      PAYMENT_ENCRYPTION_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+    };
+
+    it("accepts valid preserved retention durations", () => {
+      const config = {
+        ...baseConfig,
+        RETENTION_PROOF_DAYS: "3650",
+        RETENTION_REVOCATION_DAYS: "3650",
+        RETENTION_ANCHORING_STATE_DAYS: "3650",
+      };
+      expect(() => validateEnv(config)).not.toThrow();
+    });
+
+    it("fails when RETENTION_PROOF_DAYS is out of range", () => {
+      const config = {
+        ...baseConfig,
+        RETENTION_PROOF_DAYS: "3651",
+      };
+      expect(() => validateEnv(config)).toThrow(
+        /RETENTION_PROOF_DAYS.*at most 3650/,
+      );
+    });
+
+    it("fails when RETENTION_PROOF_DAYS is zero", () => {
+      const config = {
+        ...baseConfig,
+        RETENTION_PROOF_DAYS: "0",
+      };
+      expect(() => validateEnv(config)).toThrow(
+        /RETENTION_PROOF_DAYS.*at least 1/,
+      );
+    });
+
+    it("accepts boundary values for preserved retention", () => {
+      const config = {
+        ...baseConfig,
+        RETENTION_PROOF_DAYS: "1",
+        RETENTION_REVOCATION_DAYS: "3650",
+      };
+      expect(() => validateEnv(config)).not.toThrow();
+    });
+
+    it("treats empty/missing preserved retention as absent (no error)", () => {
+      const config = { ...baseConfig };
+      expect(() => validateEnv(config)).not.toThrow();
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // RATE LIMIT BOUNDS (Stricter validation)
+  // ──────────────────────────────────────────────────────────────────────
+
+  describe("Rate limit stricter bounds", () => {
+    const baseConfig = {
+      NODE_ENV: "development",
+      DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
+      REDIS_URL: "redis://localhost:6379",
+      SESSION_SECRET: "dev-session-secret-8-chars",
+      CREDENTIAL_SIGNING_SECRET: "dev-cred-secret-8-chars",
+      PAYMENT_ENCRYPTION_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+    };
+
+    it("fails when rate limit counter exceeds 1000", () => {
+      const config = {
+        ...baseConfig,
+        AUTH_RATE_LIMIT_MAX_CHALLENGE_CREATIONS: "1001",
+      };
+      expect(() => validateEnv(config)).toThrow(
+        /AUTH_RATE_LIMIT_MAX_CHALLENGE_CREATIONS.*exceed 1000/,
+      );
+    });
+
+    it("accepts rate limit counter at exactly 1000", () => {
+      const config = {
+        ...baseConfig,
+        AUTH_RATE_LIMIT_MAX_CHALLENGE_CREATIONS: "1000",
+      };
+      expect(() => validateEnv(config)).not.toThrow();
+    });
+
+    it("fails when global rate limit counters exceed 1000", () => {
+      const config = {
+        ...baseConfig,
+        RATE_LIMIT_DEFAULT_LIMIT: "1001",
+      };
+      expect(() => validateEnv(config)).toThrow(/RATE_LIMIT_DEFAULT_LIMIT/);
+    });
+
+    it("fails when time window exceeds 1 hour (3600000ms)", () => {
+      const config = {
+        ...baseConfig,
+        AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS: "3600001",
+      };
+      expect(() => validateEnv(config)).toThrow(
+        /AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS.*exceed 1 hour/,
+      );
+    });
+
+    it("accepts time window at exactly 1 hour (3600000ms)", () => {
+      const config = {
+        ...baseConfig,
+        AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS: "3600000",
+      };
+      expect(() => validateEnv(config)).not.toThrow();
+    });
+
+    it("fails when global rate limit window exceeds 1 hour", () => {
+      const config = {
+        ...baseConfig,
+        RATE_LIMIT_DEFAULT_TTL_MS: "3600001",
+      };
+      expect(() => validateEnv(config)).toThrow(/RATE_LIMIT_DEFAULT_TTL_MS/);
     });
   });
 
