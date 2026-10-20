@@ -540,6 +540,66 @@ const envSchema = z.object({
   HEALTH_CACHE_TTL_MS: nonnegativeInt("HEALTH_CACHE_TTL_MS").default(5000),
 
   // ──────────────────────────────────────────────────────────────────────
+  // CLOCK SKEW MONITORING (#328) — measures only, never adjusts a clock
+  // ──────────────────────────────────────────────────────────────────────
+
+  CLOCK_SKEW_MONITOR_ENABLED: optionalString(z.enum(["true", "false"])),
+  CLOCK_SKEW_INTERVAL_MS: boundedInt(5_000, 3_600_000, 60_000),
+  CLOCK_SKEW_PROBE_TIMEOUT_MS: boundedInt(100, 30_000, 2_000),
+  CLOCK_SKEW_WARN_MS: boundedInt(1, 3_600_000, 2_000),
+  CLOCK_SKEW_CRITICAL_MS: boundedInt(2, 3_600_000, 10_000),
+  CLOCK_SKEW_MAX_ROUND_TRIP_MS: boundedInt(1, 60_000, 5_000),
+  CLOCK_SKEW_MAX_SAMPLE_AGE_MS: boundedInt(1_000, 86_400_000, 180_000),
+  CLOCK_SKEW_SUSTAIN_FOR_MS: boundedInt(0, 86_400_000, 300_000),
+  CLOCK_SKEW_CLEAR_AFTER_ASSESSMENTS: boundedInt(1, 100, 2),
+  CLOCK_SKEW_LEDGER_CLOSE_ALLOWANCE_MS: boundedInt(0, 120_000, 10_000),
+  CLOCK_SKEW_UNKNOWN_POLICY: z
+    .enum(["fail_closed", "fail_open"])
+    .optional()
+    .default("fail_open"),
+  CLOCK_SKEW_READINESS_IMPACT: z.enum(["none", "critical"]).optional().default("critical"),
+
+  // ──────────────────────────────────────────────────────────────────────
+  // OPERATIONAL METRIC ROLLUPS (#330)
+  // ──────────────────────────────────────────────────────────────────────
+
+  METRICS_ROLLUP_ENABLED: z.enum(["true", "false"]).optional().default("true"),
+  METRICS_ROLLUP_LATENESS_GRACE_MS: boundedInt(0, 3_600_000, 120_000),
+  METRICS_ROLLUP_SETTLE_DELAY_MS: boundedInt(0, 600_000, 30_000),
+  METRICS_ROLLUP_RAW_RETENTION_HOURS: boundedInt(2, 168, 6),
+  METRICS_ROLLUP_MINUTE_RETENTION_DAYS: boundedInt(1, 31, 3),
+  METRICS_ROLLUP_HOUR_RETENTION_DAYS: boundedInt(2, 731, 90),
+  METRICS_ROLLUP_DAY_RETENTION_DAYS: boundedInt(30, 3650, 730),
+
+  // ──────────────────────────────────────────────────────────────────────
+  // CONFIGURATION ROLLOUTS (#329)
+  // ──────────────────────────────────────────────────────────────────────
+
+  DEPLOYMENT_ENVIRONMENT: optionalString(
+    z.string().regex(/^[a-z][a-z0-9-]{0,31}$/, "DEPLOYMENT_ENVIRONMENT must be a lowercase slug"),
+  ),
+  CONFIG_SNAPSHOT_SIGNING_SECRET: optionalString(secret(32)),
+  CONFIG_ROLLOUT_MAX_GATE_EVIDENCE_AGE_MS: boundedInt(1_000, 86_400_000, 900_000),
+  CONFIG_ROLLOUT_GATE_VALIDITY_MS: boundedInt(1_000, 86_400_000, 3_600_000),
+  CONFIG_ROLLOUT_REQUIRED_GATE_CHECKS: optionalString(
+    z.string().regex(/^[a-z][a-z0-9_]{0,63}(,[a-z][a-z0-9_]{0,63}){0,15}$/, {
+      message: "CONFIG_ROLLOUT_REQUIRED_GATE_CHECKS must be a comma-separated list of snake_case names",
+    }),
+  ),
+  CONFIG_ROLLOUT_DEFAULT_STAGES: optionalString(
+    z.string().regex(/^\d{1,3}(,\d{1,3}){0,9}$/, {
+      message: "CONFIG_ROLLOUT_DEFAULT_STAGES must be a comma-separated list of percentages",
+    }),
+  ),
+
+  // ──────────────────────────────────────────────────────────────────────
+  // PAYMENT ACCOUNT ROTATION (#321)
+  // ──────────────────────────────────────────────────────────────────────
+
+  PAYMENT_ACCOUNT_ROTATION_CHALLENGE_TTL_MS: boundedInt(60_000, 3_600_000, 600_000),
+  PAYMENT_ACCOUNT_ROTATION_ROLLBACK_WINDOW_MS: boundedInt(0, 2_592_000_000, 86_400_000),
+
+  // ──────────────────────────────────────────────────────────────────────
   // TESTING (Integration test harness only, not used in production)
   // ──────────────────────────────────────────────────────────────────────
 
@@ -786,6 +846,54 @@ function checkCrossVariableInvariants(data: z.infer<typeof envSchema>) {
     errors.push(
       "Invalid configuration: HEALTH_PROBE_TIMEOUT_MS should not exceed 25 seconds (most orchestrators use 30s timeout)",
     );
+  }
+
+  // Invariant: clock skew thresholds are ordered and samples outlive one interval.
+  // Risk: a critical threshold at or below the warning threshold makes the
+  // warning tier unreachable; a sample age shorter than the sampling interval
+  // makes every assessment UNKNOWN between samples.
+  if (data.CLOCK_SKEW_CRITICAL_MS <= data.CLOCK_SKEW_WARN_MS) {
+    errors.push(
+      "Invalid configuration: CLOCK_SKEW_CRITICAL_MS must be greater than CLOCK_SKEW_WARN_MS",
+    );
+  }
+  if (data.CLOCK_SKEW_MAX_SAMPLE_AGE_MS < data.CLOCK_SKEW_INTERVAL_MS) {
+    errors.push(
+      "Invalid configuration: CLOCK_SKEW_MAX_SAMPLE_AGE_MS must be at least CLOCK_SKEW_INTERVAL_MS",
+    );
+  }
+
+  // Invariant: each metric tier is retained long enough to be rolled up.
+  // Risk: deleting a lower tier before the tier above it has sealed would
+  // silently drop data from long-term charts.
+  const hourMs = 3_600_000;
+  const dayMs = 24 * hourMs;
+  const rawMs = data.METRICS_ROLLUP_RAW_RETENTION_HOURS * hourMs;
+  const minuteMs = data.METRICS_ROLLUP_MINUTE_RETENTION_DAYS * dayMs;
+  const hourTierMs = data.METRICS_ROLLUP_HOUR_RETENTION_DAYS * dayMs;
+  const dayTierMs = data.METRICS_ROLLUP_DAY_RETENTION_DAYS * dayMs;
+  if (!(rawMs < minuteMs && minuteMs < hourTierMs && hourTierMs < dayTierMs)) {
+    errors.push(
+      "Invalid configuration: METRICS_ROLLUP retention must increase strictly from raw to minute to hour to day",
+    );
+  }
+  const rollupHorizonMs =
+    data.METRICS_ROLLUP_LATENESS_GRACE_MS + data.METRICS_ROLLUP_SETTLE_DELAY_MS;
+  if (rawMs <= 60_000 + rollupHorizonMs + hourMs) {
+    errors.push(
+      "Invalid configuration: METRICS_ROLLUP_RAW_RETENTION_HOURS is shorter than the minute rollup horizon",
+    );
+  }
+
+  // Invariant: canary stages are strictly increasing percentages ending at 100.
+  if (data.CONFIG_ROLLOUT_DEFAULT_STAGES) {
+    const stages = data.CONFIG_ROLLOUT_DEFAULT_STAGES.split(",").map(Number);
+    const ordered = stages.every((stage, index) => index === 0 || stage > stages[index - 1]);
+    if (!ordered || stages[0] < 1 || stages[stages.length - 1] !== 100) {
+      errors.push(
+        "Invalid configuration: CONFIG_ROLLOUT_DEFAULT_STAGES must strictly increase from at least 1 and end at 100",
+      );
+    }
   }
 
   // ────────────────────────────────────────────────────────────────────────

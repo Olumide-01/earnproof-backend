@@ -64,6 +64,16 @@ export class DependencyResultDto {
     example: 1200,
   })
   ageMs?: number;
+
+  @ApiPropertyOptional({
+    description:
+      "Diagnostics only, on the `clock_skew` entry: provable local-vs-network " +
+      "skew (ms, positive = local ahead), sustained-alert state, policy and " +
+      "per-source outcome codes. See docs/clock-skew.md.",
+    type: "object",
+    additionalProperties: true,
+  })
+  clockSkew?: object;
 }
 
 export class ReadinessResponseDto {

@@ -923,6 +923,7 @@ model Proof {
   disclosureReceipts      DisclosureReceipt[]
   disputes                ProofDispute[]
   expirationReminderDeliveries ProofExpirationReminderDelivery[]
+  verificationProvenances      VerificationProvenance[]
 
   @@index([userId, status])
   @@index([userId, createdAt, id])
@@ -1131,6 +1132,7 @@ model VerificationProvenance {
   /// Timestamp when decision was made
   decidedAt     DateTime  @default(now())
   createdAt     DateTime  @default(now())
+  verificationProvenanceSources VerificationProvenanceSource[]
 
   @@unique([proofId, decidedAt])
   @@index([proofId, createdAt])
@@ -2342,6 +2344,8 @@ model PaymentBackfillJob {
   endLedger         Int
   status            PaymentBackfillStatus @default(PENDING)
   checkpointCursor  String?
+  /// Account to scan (#321). NULL for legacy jobs, which scan the user's wallet.
+  accountId         String?               @db.VarChar(56)
   pagesProcessed    Int                   @default(0)
   recordsSeen       Int                   @default(0)
   paymentsCreated   Int                   @default(0)

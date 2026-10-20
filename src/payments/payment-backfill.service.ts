@@ -174,6 +174,7 @@ type ClaimedJob = Pick<
   | "endLedger"
   | "checkpointCursor"
   | "attempts"
+  | "accountId"
 >;
 
 export type BackfillLeaseOutcome =
@@ -422,7 +423,8 @@ export class PaymentBackfillService {
         job."startLedger",
         job."endLedger",
         job."checkpointCursor",
-        job."attempts"
+        job."attempts",
+        job."accountId"
     `;
     return claimed ?? null;
   }
@@ -459,6 +461,10 @@ export class PaymentBackfillService {
     if (!user) {
       return this.fail(job, owner, "user_missing", true);
     }
+    // A job created by a payment account rotation (#321) scans the account it
+    // was planned for, never whichever account the user holds by the time it
+    // runs; legacy jobs (accountId NULL) scan the user's wallet as before.
+    const scannedAccount = job.accountId ?? user.walletAddress;
 
     const checkpoint =
       job.checkpointCursor !== null && /^\d{1,20}$/.test(job.checkpointCursor)
@@ -469,7 +475,7 @@ export class PaymentBackfillService {
     let page: AscendingPaymentsPage;
     try {
       page = await this.stellarService.readPaymentsPageAscending(
-        user.walletAddress,
+        scannedAccount,
         { cursor: checkpoint.toString(), pageLimit: BACKFILL_PAGE_LIMIT },
       );
     } catch {

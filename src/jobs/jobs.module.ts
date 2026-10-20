@@ -30,6 +30,8 @@ import { WebhookTlsProbeJob } from "./webhook-tls-probe.job";
 import { DomainEventOutboxWorkerService } from "./domain-event-outbox-worker.service";
 import { BulkAdminService } from "./bulk-admin/bulk-admin.service";
 import { BulkAdminController } from "./bulk-admin/bulk-admin.controller";
+import { MetricsModule } from "../metrics/metrics.module";
+import { MetricsRollupJob } from "./metrics-rollup.job";
 
 @Module({
   imports: [
@@ -40,6 +42,7 @@ import { BulkAdminController } from "./bulk-admin/bulk-admin.controller";
     DisclosureModule,
     WebhooksModule,
     ApiKeysModule,
+    MetricsModule,
   ],
   controllers: [JobExecutionController, RevocationPropagationController],
   controllers: [JobExecutionController, BulkAdminController],
@@ -65,6 +68,7 @@ import { BulkAdminController } from "./bulk-admin/bulk-admin.controller";
     AttestationReconcilerService,
     RevocationPropagationReconcilerService,
     BulkAdminService,
+    MetricsRollupJob,
   ],
   exports: [
     AnchoringWorkerService,

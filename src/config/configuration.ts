@@ -181,6 +181,68 @@ export const configuration = () => ({
     // with poll rate rather than with anything meaningful.
     cacheTtlMs: Number(process.env.HEALTH_CACHE_TTL_MS ?? 5000),
   },
+  // Server vs network clock skew monitoring (#328). See docs/clock-skew.md.
+  // The monitor only measures; it never adjusts a clock.
+  clockSkew: {
+    // Off by default under NODE_ENV=test so test boots never call Horizon.
+    enabled: process.env.CLOCK_SKEW_MONITOR_ENABLED
+      ? process.env.CLOCK_SKEW_MONITOR_ENABLED === "true"
+      : process.env.NODE_ENV !== "test",
+    intervalMs: Number(process.env.CLOCK_SKEW_INTERVAL_MS ?? 60_000),
+    probeTimeoutMs: Number(process.env.CLOCK_SKEW_PROBE_TIMEOUT_MS ?? 2_000),
+    warnMs: Number(process.env.CLOCK_SKEW_WARN_MS ?? 2_000),
+    criticalMs: Number(process.env.CLOCK_SKEW_CRITICAL_MS ?? 10_000),
+    maxRoundTripMs: Number(process.env.CLOCK_SKEW_MAX_ROUND_TRIP_MS ?? 5_000),
+    maxSampleAgeMs: Number(process.env.CLOCK_SKEW_MAX_SAMPLE_AGE_MS ?? 180_000),
+    sustainForMs: Number(process.env.CLOCK_SKEW_SUSTAIN_FOR_MS ?? 300_000),
+    clearAfterAssessments: Number(process.env.CLOCK_SKEW_CLEAR_AFTER_ASSESSMENTS ?? 2),
+    ledgerCloseAllowanceMs: Number(
+      process.env.CLOCK_SKEW_LEDGER_CLOSE_ALLOWANCE_MS ?? 10_000,
+    ),
+    // fail_open (default): unknown is reported but never a breach. Both time
+    // sources are Horizon, so fail_closed couples readiness to Horizon
+    // availability; opt in only when that is the intended trade-off.
+    unknownPolicy: process.env.CLOCK_SKEW_UNKNOWN_POLICY || "fail_open",
+    // critical: readiness fails during a sustained critical alert; none: never.
+    readinessImpact: process.env.CLOCK_SKEW_READINESS_IMPACT ?? "critical",
+  },
+  // Operational metric downsampling (#330). See docs/metrics-rollups.md.
+  metricsRollup: {
+    enabled: process.env.METRICS_ROLLUP_ENABLED !== "false",
+    latenessGraceMs: Number(process.env.METRICS_ROLLUP_LATENESS_GRACE_MS ?? 120_000),
+    settleDelayMs: Number(process.env.METRICS_ROLLUP_SETTLE_DELAY_MS ?? 30_000),
+    rawRetentionHours: Number(process.env.METRICS_ROLLUP_RAW_RETENTION_HOURS ?? 6),
+    minuteRetentionDays: Number(process.env.METRICS_ROLLUP_MINUTE_RETENTION_DAYS ?? 3),
+    hourRetentionDays: Number(process.env.METRICS_ROLLUP_HOUR_RETENTION_DAYS ?? 90),
+    dayRetentionDays: Number(process.env.METRICS_ROLLUP_DAY_RETENTION_DAYS ?? 730),
+  },
+  // Configuration rollout snapshots and canaries (#329).
+  // See docs/config-rollouts.md.
+  configRollout: {
+    environment: process.env.DEPLOYMENT_ENVIRONMENT || process.env.NODE_ENV || "development",
+    // Optional dedicated key. When absent, a purpose-bound key is derived from
+    // CREDENTIAL_SIGNING_SECRET, so snapshots are always signed.
+    signingSecret: process.env.CONFIG_SNAPSHOT_SIGNING_SECRET || undefined,
+    maxGateEvidenceAgeMs: Number(process.env.CONFIG_ROLLOUT_MAX_GATE_EVIDENCE_AGE_MS ?? 900_000),
+    gateValidityMs: Number(process.env.CONFIG_ROLLOUT_GATE_VALIDITY_MS ?? 3_600_000),
+    requiredGateChecks: (
+      process.env.CONFIG_ROLLOUT_REQUIRED_GATE_CHECKS || "readiness,error_rate,latency"
+    )
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+    defaultStages: (process.env.CONFIG_ROLLOUT_DEFAULT_STAGES || "5,25,100")
+      .split(",")
+      .map((value) => Number(value.trim())),
+  },
+  // Payment account rotation and checkpoint handoff (#321).
+  // See docs/payment-account-rotation.md.
+  paymentAccountRotation: {
+    challengeTtlMs: Number(process.env.PAYMENT_ACCOUNT_ROTATION_CHALLENGE_TTL_MS ?? 600_000),
+    rollbackWindowMs: Number(
+      process.env.PAYMENT_ACCOUNT_ROTATION_ROLLBACK_WINDOW_MS ?? 86_400_000,
+    ),
+  },
   webhooks: {
     // Attempts per delivery chain before the terminal attempt is
     // dead-lettered. Automatic retries never exceed this.

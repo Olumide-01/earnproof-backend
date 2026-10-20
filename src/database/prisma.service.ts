@@ -66,82 +66,92 @@ export class PrismaService
    * retry loop and cannot livelock under contention.
    */
   private installAuditChainWriter(): void {
-    // Note: deliberately NOT bound/reused inside the transaction below.
-    // `tx` (the interactive-transaction client Prisma hands to the
-    // `$transaction` callback) is a distinct client object from `this`, so
-    // `tx.auditLog.create` is the *original*, unpatched delegate method —
-    // exactly what is needed to perform the real insert without recursing
-    // back into this override.
-    this.auditLog.create = ((args: Prisma.AuditLogCreateArgs) => {
-      return this.$transaction(async (tx) => {
-        const data = args.data;
-        const organizationId = (data.organizationId as string | null | undefined) ?? null;
-        const chainKey = resolveChainKey(organizationId);
+    // `appendAuditLog` performs the insert through `tx.auditLog.create`, the
+    // interactive-transaction client's *unpatched* delegate, so this override
+    // never recurses into itself.
+    this.auditLog.create = ((args: Prisma.AuditLogCreateArgs) =>
+      this.$transaction((tx) => this.appendAuditLog(tx, args))) as unknown as typeof this.auditLog.create;
+  }
 
-        await tx.$executeRaw`
-          INSERT INTO "AuditChainCursor" ("chainKey", "lastSequence", "lastHash", "updatedAt")
-          VALUES (${chainKey}, 0, NULL, now())
-          ON CONFLICT ("chainKey") DO NOTHING
-        `;
+  /**
+   * Appends one audit record to its hash chain inside the caller's
+   * transaction, so the record commits or rolls back with the change it
+   * describes.
+   *
+   * Use this instead of `tx.auditLog.create(...)` inside `$transaction`: the
+   * interactive-transaction client is a different object from `this`, so its
+   * `auditLog.create` is the unpatched delegate and would write a row with the
+   * column defaults (`chainKey` "SYSTEM", `sequence` 0) — colliding on the
+   * `(chainKey, sequence)` unique index from the second such write onwards.
+   * The cursor row lock below is held until the caller's transaction ends.
+   */
+  async appendAuditLog(tx: Prisma.TransactionClient, args: Prisma.AuditLogCreateArgs) {
+    const data = args.data;
+    const organizationId = (data.organizationId as string | null | undefined) ?? null;
+    const chainKey = resolveChainKey(organizationId);
 
-        const rows = await tx.$queryRaw<ChainCursorRow[]>`
-          SELECT "chainKey", "lastSequence", "lastHash"
-          FROM "AuditChainCursor"
-          WHERE "chainKey" = ${chainKey}
-          FOR UPDATE
-        `;
-        const cursor = rows[0];
-        if (!cursor) {
-          throw new Error(
-            `Audit chain cursor for "${chainKey}" could not be locked`,
-          );
-        }
+    await tx.$executeRaw`
+      INSERT INTO "AuditChainCursor" ("chainKey", "lastSequence", "lastHash", "updatedAt")
+      VALUES (${chainKey}, 0, NULL, now())
+      ON CONFLICT ("chainKey") DO NOTHING
+    `;
 
-        const sequence = cursor.lastSequence + BigInt(1);
-        const prevHash = cursor.lastHash;
-        const createdAt = (data.createdAt as Date | undefined) ?? new Date();
-        const actorType = data.actorType as string;
-        const actorId = (data.actorId as string | null | undefined) ?? null;
-        const action = data.action as string;
-        const resourceType = data.resourceType as string;
-        const resourceId = (data.resourceId as string | null | undefined) ?? null;
-        const metadata = (data.metadata as Prisma.InputJsonValue | null | undefined) ?? null;
+    const rows = await tx.$queryRaw<ChainCursorRow[]>`
+      SELECT "chainKey", "lastSequence", "lastHash"
+      FROM "AuditChainCursor"
+      WHERE "chainKey" = ${chainKey}
+      FOR UPDATE
+    `;
+    const cursor = rows[0];
+    if (!cursor) {
+      throw new Error(
+        `Audit chain cursor for "${chainKey}" could not be locked`,
+      );
+    }
 
-        const hash = computeAuditHash(prevHash, {
-          chainKey,
-          sequence,
-          hashVersion: CURRENT_HASH_VERSION,
-          actorType,
-          actorId,
-          action,
-          resourceType,
-          resourceId,
-          metadata,
-          createdAt,
-        });
+    const sequence = cursor.lastSequence + BigInt(1);
+    const prevHash = cursor.lastHash;
+    const createdAt = (data.createdAt as Date | undefined) ?? new Date();
+    const actorType = data.actorType as string;
+    const actorId = (data.actorId as string | null | undefined) ?? null;
+    const action = data.action as string;
+    const resourceType = data.resourceType as string;
+    const resourceId = (data.resourceId as string | null | undefined) ?? null;
+    const metadata = (data.metadata as Prisma.InputJsonValue | null | undefined) ?? null;
 
-        const created = await tx.auditLog.create({
-          ...args,
-          data: {
-            ...data,
-            organizationId,
-            chainKey,
-            sequence,
-            hashVersion: CURRENT_HASH_VERSION,
-            prevHash,
-            hash,
-            createdAt,
-          },
-        } as Prisma.AuditLogCreateArgs);
+    const hash = computeAuditHash(prevHash, {
+      chainKey,
+      sequence,
+      hashVersion: CURRENT_HASH_VERSION,
+      actorType,
+      actorId,
+      action,
+      resourceType,
+      resourceId,
+      metadata,
+      createdAt,
+    });
 
-        await tx.$executeRaw`
-          UPDATE "AuditChainCursor"
-          SET "lastSequence" = ${sequence}, "lastHash" = ${hash}, "updatedAt" = now()
-          WHERE "chainKey" = ${chainKey}
-        `;
+    const created = await tx.auditLog.create({
+      ...args,
+      data: {
+        ...data,
+        organizationId,
+        chainKey,
+        sequence,
+        hashVersion: CURRENT_HASH_VERSION,
+        prevHash,
+        hash,
+        createdAt,
+      },
+    } as Prisma.AuditLogCreateArgs);
 
-        return created;
-      });
-    }) as unknown as typeof this.auditLog.create;
+    await tx.$executeRaw`
+      UPDATE "AuditChainCursor"
+      SET "lastSequence" = ${sequence}, "lastHash" = ${hash}, "updatedAt" = now()
+      WHERE "chainKey" = ${chainKey}
+    `;
+
+    return created;
   }
 }

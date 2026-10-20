@@ -11,6 +11,7 @@ import {
   DeploymentMetadataState,
 } from "./deployment-metadata.service";
 import { HealthHysteresisService } from "./health-hysteresis.service";
+import { ClockSkewMonitorService } from "./clock-skew-monitor.service";
 import {
   DependencyKind,
   DependencyResult,
@@ -18,7 +19,6 @@ import {
   DependencyStatusValue,
   ReadinessResult,
 } from "./health.types";
-import { CircuitBreakerRegistry } from "../common/resilience/circuit-breaker-registry";
 
 /**
  * Default probe timeout.
@@ -74,6 +74,7 @@ export class HealthService {
   private readonly contractDrift?: ContractDriftService;
   private readonly contractSuccessor?: ContractSuccessorService;
   private readonly migrationLease?: MigrationLeaseService;
+  private readonly hysteresis?: HealthHysteresisService;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -81,6 +82,7 @@ export class HealthService {
     @Optional() p3?: any,
     @Optional() p4?: any,
     @Optional() p5?: any,
+    @Optional() private readonly clockSkew?: ClockSkewMonitorService,
   ) {
     const rest = [p3, p4, p5].filter(Boolean);
     for (const item of rest) {
@@ -153,6 +155,11 @@ export class HealthService {
           this.probeMigrationCompatibility(),
         ),
       );
+    }
+    // Not cached: it reads in-memory monitor state (no I/O), and a cached
+    // verdict could outlive the alert it reflects.
+    if (this.clockSkew?.enabled && this.clockSkew.readinessImpact !== "none") {
+      requiredProbes.push(Promise.resolve(this.probeClockSkewReadiness()));
     }
     const dependencies = await Promise.all(requiredProbes);
 
@@ -227,6 +234,7 @@ export class HealthService {
       this.probeCached("circuit_breakers", DependencyKind.OPTIONAL, () =>
         Promise.resolve(this.probeCircuitBreakers()),
       ),
+      Promise.resolve(this.probeClockSkewDiagnostics()),
     );
     const dependencies = await Promise.all(diagProbes);
 
@@ -555,6 +563,79 @@ export class HealthService {
    * states only, so this authorized endpoint never becomes a channel for
    * transaction payloads or addresses.
    */
+  /**
+   * Readiness view of clock skew (earnproof-backend#328).
+   *
+   * Fails only while a sustained critical alert is active, never on a single
+   * assessment — see `ClockSkewMonitorService.blocksReadiness`. Carries a
+   * reason code only; the measured skew is diagnostics-only detail.
+   */
+  private probeClockSkewReadiness(): DependencyResult {
+    const blocked = this.clockSkew?.blocksReadiness() ?? false;
+    return {
+      name: "clock_skew",
+      kind: DependencyKind.REQUIRED,
+      status: blocked ? DependencyStatus.ERROR : DependencyStatus.OK,
+      reason: blocked ? "clock_skew_sustained_critical" : undefined,
+      durationMs: 0,
+    };
+  }
+
+  /**
+   * Diagnostics view of clock skew: the instantaneous classification, the
+   * alert state and per-source outcome codes. Never a URL or response body.
+   */
+  private probeClockSkewDiagnostics(): DependencyResult {
+    if (!this.clockSkew) {
+      return {
+        name: "clock_skew",
+        kind: DependencyKind.OPTIONAL,
+        status: DependencyStatus.NOT_CONFIGURED,
+        reason: "clock_skew_monitor_absent",
+      };
+    }
+    if (!this.clockSkew.enabled) {
+      return { name: "clock_skew", kind: DependencyKind.OPTIONAL, status: DependencyStatus.DISABLED };
+    }
+
+    const snapshot = this.clockSkew.snapshot();
+    // REQUIRED only while it actually gates readiness, so the diagnostics
+    // verdict never disagrees with readiness about clock skew.
+    if (this.clockSkew.blocksReadiness()) {
+      return {
+        name: "clock_skew",
+        kind: DependencyKind.REQUIRED,
+        status: DependencyStatus.ERROR,
+        reason: "clock_skew_sustained_critical",
+        durationMs: 0,
+        clockSkew: snapshot,
+      };
+    }
+    const base = {
+      name: "clock_skew",
+      kind: DependencyKind.OPTIONAL,
+      durationMs: 0,
+      clockSkew: snapshot,
+    };
+    switch (snapshot.status) {
+      case "ok":
+        return { ...base, status: DependencyStatus.OK };
+      case "warning":
+        return { ...base, status: DependencyStatus.DEGRADED, reason: "clock_skew_warning" };
+      case "critical":
+        return { ...base, status: DependencyStatus.ERROR, reason: "clock_skew_critical" };
+      default:
+        return {
+          ...base,
+          status:
+            snapshot.policy.unknownPolicy === "fail_closed"
+              ? DependencyStatus.ERROR
+              : DependencyStatus.DEGRADED,
+          reason: `clock_skew_unknown:${snapshot.reason ?? "no_samples"}`,
+        };
+    }
+  }
+
   private probeCircuitBreakers(): DependencyResult {
     if (!this.circuits) {
       return {
