@@ -763,7 +763,6 @@ export const REQUIRED_AUDIT_DOMAINS: readonly AuditDomain[] = [
   "api_key",
   "webhook",
   "operator",
-];
 
 /** Lookup by stable type. */
 export function auditEvent(type: string): AuditEventDefinition {
