@@ -6,13 +6,26 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
+  AscendingPageOptions,
+  AscendingPaymentsPage,
   HorizonClient,
   HorizonCancelledError,
   HorizonReadOptions,
   HorizonReadResult,
 } from "./horizon-client";
-import { HorizonTransactionRecord, NormalizedPayment } from "./stellar.types";
+import {
+  HorizonLedgerSummary,
+  HorizonOperationSummary,
+  HorizonTransactionRecord,
+  NormalizedPayment,
+} from "./stellar.types";
 import { HorizonException } from "../common/exceptions/domain.exceptions";
+import { FetchHorizonTransport } from "./horizon-transport";
+import { CircuitHorizonTransport } from "./horizon-circuit-transport";
+import { CircuitBreakerRegistry } from "../common/resilience/circuit-breaker.registry";
+
+/** Prefix for the per-network Horizon circuit name, kept stable for diagnostics. */
+export const HORIZON_CIRCUIT_PREFIX = "horizon";
 
 @Injectable()
 export class StellarService {
@@ -26,12 +39,56 @@ export class StellarService {
      * sleep. Production builds its own client from configuration.
      */
     @Optional() horizonClient?: HorizonClient,
+    /**
+     * Optional so the test constructor (which injects a ready-made client)
+     * need not provide it. Production resolves the shared registry, so the
+     * Horizon circuit is the same instance the health diagnostics reads.
+     */
+    @Optional() registry?: CircuitBreakerRegistry,
   ) {
     this.horizonUrl = configService
       .getOrThrow<string>("stellar.horizonUrl")
       .replace(/\/$/, "");
 
-    this.horizon = horizonClient ?? new HorizonClient({ horizonUrl: this.horizonUrl });
+    if (horizonClient) {
+      this.horizon = horizonClient;
+      return;
+    }
+
+    // One circuit per network: testnet being down says nothing about mainnet,
+    // and a shared circuit would let one network's outage refuse the other's
+    // traffic. The transport wrapper is skipped when no registry is available
+    // (only in tests that inject their own client), so the client still works
+    // without resilience wiring.
+    const baseTransport = new FetchHorizonTransport();
+    const network = registry
+      ? configService.get<string>("stellar.network") ?? "testnet"
+      : "testnet";
+    const transport = registry
+      ? new CircuitHorizonTransport(
+          baseTransport,
+          registry.getOrCreate({
+            name: `${HORIZON_CIRCUIT_PREFIX}:${network}`,
+            failureThreshold: configService.get<number>(
+              "stellar.circuitBreaker.failureThreshold",
+            ),
+            openDurationMs: configService.get<number>(
+              "stellar.circuitBreaker.openDurationMs",
+            ),
+            halfOpenMaxProbes: configService.get<number>(
+              "stellar.circuitBreaker.halfOpenMaxProbes",
+            ),
+            successThreshold: configService.get<number>(
+              "stellar.circuitBreaker.successThreshold",
+            ),
+          }),
+        )
+      : baseTransport;
+
+    this.horizon = new HorizonClient({
+      horizonUrl: this.horizonUrl,
+      transport,
+    });
   }
 
   /**
@@ -77,6 +134,35 @@ export class StellarService {
     }
   }
 
+  /**
+   * One ledger's sequence and hash, or `null` when Horizon has no such ledger.
+   *
+   * Failures collapse to the same dependency error as the payment read: a
+   * checkpoint that cannot be verified must stop the sync, not be assumed good.
+   */
+  async fetchLedger(sequence: number): Promise<HorizonLedgerSummary | null> {
+    try {
+      return await this.horizon.getLedger(sequence);
+    } catch {
+      throw new ServiceUnavailableException(
+        "Stellar Horizon is temporarily unavailable",
+      );
+    }
+  }
+
+  /** One operation's identity, or `null` when Horizon has no such operation. */
+  async fetchOperation(
+    operationId: string,
+  ): Promise<HorizonOperationSummary | null> {
+    try {
+      return await this.horizon.getOperation(operationId);
+    } catch {
+      throw new ServiceUnavailableException(
+        "Stellar Horizon is temporarily unavailable",
+      );
+    }
+  }
+
   async fetchTransaction(
     transactionHash: string,
   ): Promise<HorizonTransactionRecord | null> {
@@ -98,5 +184,12 @@ export class StellarService {
 
     const transaction = (await response.json()) as HorizonTransactionRecord;
     return transaction && typeof transaction === "object" ? transaction : null;
+  }
+
+  async readPaymentsPageAscending(
+    walletAddress: string,
+    options: AscendingPageOptions,
+  ): Promise<AscendingPaymentsPage> {
+    return this.horizon.readPaymentsPageAscending(walletAddress, options);
   }
 }

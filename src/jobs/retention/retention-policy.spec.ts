@@ -87,6 +87,7 @@ describe("retention policy", () => {
         "audit_logs",
         "auth_sessions",
         "failed_anchoring_intents",
+        "idempotency_records",
         "verification_events",
         "wallet_challenges",
         "webhook_deliveries",

@@ -43,6 +43,13 @@ export const METRIC_NAMES = {
   jobRunsTotal: "job_runs_total",
   jobDurationMs: "job_duration_ms",
   jobRecordsAffectedTotal: "job_records_affected_total",
+
+  // ─── Organization quotas ────────────────────────────────────────────────
+  quotaRejectionsTotal: "quota_rejections_total",
+
+  // ─── Revocation propagation ─────────────────────────────────────────────
+  revocationPropagationChecksTotal: "revocation_propagation_checks_total",
+  revocationPropagationLagSeconds: "revocation_propagation_lag_seconds",
 } as const;
 
 /**
@@ -169,5 +176,33 @@ export function registerCoreMetrics(registry: MetricsRegistry): void {
     name: METRIC_NAMES.jobRecordsAffectedTotal,
     help: "Records affected by a scheduled job. A count only; never record content.",
     labelNames: ["job", "workflow"],
+  });
+
+  // ─── Organization quotas ────────────────────────────────────────────────
+  // Separate from http_requests_total so a quota rejection is never mistaken
+  // for throttling: both answer 429, only this counter names the quota.
+  // Labelled by quota, never by organization — that would scale with tenants.
+  registry.registerCounter({
+    name: METRIC_NAMES.quotaRejectionsTotal,
+    help: "Operations rejected because an organization quota was exhausted, by quota.",
+    labelNames: ["quota"],
+  });
+
+  // ─── Revocation propagation ─────────────────────────────────────────────
+  // Carries no proof identity: which proof is lagging is a log question,
+  // answered by correlation ID, same as verificationsTotal above.
+  registry.registerCounter({
+    name: METRIC_NAMES.revocationPropagationChecksTotal,
+    help: "Revocation propagation channel checks, by channel and observed state.",
+    labelNames: ["channel", "propagation_state"],
+  });
+
+  registry.registerHistogram({
+    name: METRIC_NAMES.revocationPropagationLagSeconds,
+    help: "Seconds since local revocation for a channel observed not yet confirmed, at reconcile time.",
+    labelNames: ["channel"],
+    // Lag buckets from one minute to three days, bracketing the channels'
+    // own retry/dead-letter horizons.
+    buckets: [60, 300, 900, 1_800, 3_600, 21_600, 86_400, 259_200],
   });
 }

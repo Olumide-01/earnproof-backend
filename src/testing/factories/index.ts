@@ -549,140 +549,145 @@ export function pendingAnchoringIntent(
 
 export * from "./synthetic";
 
+
 // ---------------------------------------------------------------------------
-// Compatibility Assessments
+// Credential Verification Key Trust Pins
 // ---------------------------------------------------------------------------
 
-export type AssessmentStatusValue = "PENDING" | "RUNNING" | "COMPLETE" | "FAILED";
-
-export interface CompatibilityAssessmentInput {
+export interface CredentialVerificationKeyTrustPinInput {
   id: string;
-  proofId: string;
-  version: string;
-  findingsHash: string | null;
-  status: AssessmentStatusValue;
-  requestedBy: string;
-  artifactVersion: string;
-  hasBlockingFindings: boolean;
-  findings: CompatibilityFinding[] | null;
-  lastErrorSafe: string | null;
-  completedAt: Date | null;
+  organizationId: string;
+  issuerId: string;
+  network: string;
+  keyId: string;
+  trustedKeySnapshot: {
+    alg: "EdDSA";
+    crv: "Ed25519";
+    kid: string;
+    kty: "OKP";
+    x: string;
+    use: "sig";
+    status: "active" | "retired";
+  };
+  effectiveAt: Date;
+  expiresAt: Date | null;
+  status: "ACTIVE" | "RETIRED" | "REVOKED";
+  decisionMetadata?: {
+    decidedBy: string;
+    reason?: string;
+    context?: Record<string, unknown>;
+  };
+  revision: number;
+  revokedAt: Date | null;
+  revokedBy: string | null;
+  revocationReason: string | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
-/** A completed assessment with no BLOCKING findings — governance can auto-approve. */
-export function buildCompatibilityAssessment(
+/** Base trust pin factory. */
+export function buildTrustPin(
   seed: string | number,
-  proofId: string,
-  overrides: Partial<CompatibilityAssessmentInput> = {},
-): CompatibilityAssessmentInput {
-  const id = syntheticId("assessment", seed);
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  const seedStr = String(seed);
   return {
-    id,
-    proofId,
-    version: ASSESSMENT_VERSION,
-    findingsHash: `sha256:synthetic${syntheticCredentialHash(String(seed)).replace("sha256:", "").slice(0, 55)}`,
-    status: "COMPLETE",
-    requestedBy: syntheticWalletHash(`req-${String(seed)}`),
-    artifactVersion: "1",
-    hasBlockingFindings: false,
-    findings: [
-      {
-        checkKind: CheckKind.ABI,
-        severity: FindingSeverity.INFO,
-        description: "No previous ABI snapshot; current ABI recorded as baseline.",
-        hash: `sha256:synthetic${syntheticCredentialHash(`abi-${String(seed)}`).replace("sha256:", "").slice(0, 55)}`,
-      },
-    ],
-    lastErrorSafe: null,
-    completedAt: new Date("2025-01-01T12:00:00.000Z"),
+    id: syntheticId("trust_pin", seed),
+    organizationId,
+    issuerId,
+    network: "testnet",
+    keyId: `key-${seedStr}`,
+    trustedKeySnapshot: {
+      alg: "EdDSA",
+      crv: "Ed25519",
+      kid: `key-${seedStr}`,
+      kty: "OKP",
+      x: syntheticSecret(seed).substring(0, 43), // base64url encoded public key material
+      use: "sig",
+      status: "active",
+    },
+    effectiveAt: syntheticDate(-30),
+    expiresAt: syntheticDate(90),
+    status: "ACTIVE",
+    decisionMetadata: {
+      decidedBy: syntheticId("user", seed),
+      reason: "Initial trust pin",
+    },
+    revision: 0,
+    revokedAt: null,
+    revokedBy: null,
+    revocationReason: null,
+    createdAt: syntheticDate(-30),
+    updatedAt: syntheticDate(-30),
     ...overrides,
   };
 }
 
-/** An assessment blocked by a BLOCKING finding — governance must reject. */
-export function blockingCompatibilityAssessment(
+/** An active trust pin for a key. */
+export function activeTrustPin(
   seed: string | number,
-  proofId: string,
-  overrides: Partial<CompatibilityAssessmentInput> = {},
-): CompatibilityAssessmentInput {
-  const blockingFinding: CompatibilityFinding = {
-    checkKind: CheckKind.ABI,
-    severity: FindingSeverity.BLOCKING,
-    description: `ABI function "transfer" was removed — existing callers will break.`,
-    hash: `sha256:synthetic${syntheticCredentialHash(`blocking-${String(seed)}`).replace("sha256:", "").slice(0, 55)}`,
-    evidence: { removedFunction: "transfer" },
-  };
-  return buildCompatibilityAssessment(seed, proofId, {
-    findingsHash: `sha256:synthetic${syntheticCredentialHash(`blocking-hash-${String(seed)}`).replace("sha256:", "").slice(0, 55)}`,
-    hasBlockingFindings: true,
-    findings: [blockingFinding],
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  return buildTrustPin(seed, organizationId, issuerId, {
+    status: "ACTIVE",
+    effectiveAt: syntheticDate(-30),
+    expiresAt: syntheticDate(90),
+    revokedAt: null,
     ...overrides,
   });
 }
 
-/** An assessment that failed before completing. */
-export function failedCompatibilityAssessment(
+/** A retired trust pin (superseded by a new one). */
+export function retiredTrustPin(
   seed: string | number,
-  proofId: string,
-  overrides: Partial<CompatibilityAssessmentInput> = {},
-): CompatibilityAssessmentInput {
-  return buildCompatibilityAssessment(seed, proofId, {
-    status: "FAILED",
-    findingsHash: null,
-    findings: null,
-    hasBlockingFindings: false,
-    completedAt: null,
-    lastErrorSafe: "assessment execution failed: redacted",
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  return buildTrustPin(seed, organizationId, issuerId, {
+    status: "RETIRED",
+    effectiveAt: syntheticDate(-60),
+    expiresAt: syntheticDate(0),
+    revokedAt: null,
+    updatedAt: syntheticDate(-10),
+    revision: 1,
     ...overrides,
   });
 }
 
-/** A pending assessment not yet processed by the worker. */
-export function pendingCompatibilityAssessment(
+/** A revoked trust pin (due to key compromise). */
+export function revokedTrustPin(
   seed: string | number,
-  proofId: string,
-  overrides: Partial<CompatibilityAssessmentInput> = {},
-): CompatibilityAssessmentInput {
-  return buildCompatibilityAssessment(seed, proofId, {
-    status: "PENDING",
-    findingsHash: null,
-    findings: null,
-    hasBlockingFindings: false,
-    completedAt: null,
-    lastErrorSafe: null,
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  return buildTrustPin(seed, organizationId, issuerId, {
+    status: "REVOKED",
+    revokedAt: syntheticDate(-5),
+    revokedBy: syntheticId("user", "admin"),
+    revocationReason: "Key compromise detected",
+    updatedAt: syntheticDate(-5),
+    revision: 1,
     ...overrides,
   });
 }
 
-// ---------------------------------------------------------------------------
-// Signed Artifacts (test inputs — never contain real material)
-// ---------------------------------------------------------------------------
-
-/** A minimal well-formed synthetic signed artifact. */
-export function buildSignedArtifact(
+/** An expired trust pin (past its expiresAt date). */
+export function expiredTrustPin(
   seed: string | number,
-  proofId: string,
-  overrides: Partial<SignedArtifact> = {},
-): SignedArtifact {
-  return {
-    proofId,
-    schemaVersion: "1",
-    credentialHash: syntheticCredentialHash(String(seed)),
-    abi: [
-      { name: "register_proof", inputs: ["proofId", "commitment"], outputs: ["bool"] },
-      { name: "is_valid_proof", inputs: ["proofId"], outputs: ["bool"] },
-    ],
-    storage: [
-      { slot: "0x00", type: "bytes32", mutable: false },
-      { slot: "0x01", type: "address", mutable: false },
-    ],
-    dependencies: [
-      { name: "@stellar/sdk", version: "11.0.0", breaking: false },
-    ],
-    clientContracts: [
-      { contractId: "earnproof.proof-registry.v1", version: "1", deprecated: false },
-    ],
-    migrationNotes: [],
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  return buildTrustPin(seed, organizationId, issuerId, {
+    status: "ACTIVE",
+    effectiveAt: syntheticDate(-60),
+    expiresAt: syntheticDate(-5), // Already expired
     ...overrides,
-  };
+  });
 }

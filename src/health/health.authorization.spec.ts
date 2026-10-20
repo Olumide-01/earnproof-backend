@@ -24,7 +24,12 @@ describe("health endpoint authorization", () => {
       | undefined) ?? [];
 
   describe("public probes", () => {
-    it.each(["getHealth", "getLiveness", "getReadiness"])(
+    it.each([
+      "getHealth",
+      "getLiveness",
+      "getReadiness",
+      "getDeploymentMetadata",
+    ])(
       "%s stays unauthenticated so orchestrators can poll it",
       (handler) => {
         // Load balancers and kubelets cannot present an API key. Requiring one

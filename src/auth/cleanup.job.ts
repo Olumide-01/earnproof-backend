@@ -4,6 +4,19 @@ import { Cron, CronExpression } from "@nestjs/schedule";
 import { PrismaService } from "../database/prisma.service";
 import { AuthAuditService } from "./auth-audit.service";
 import { SessionService } from "./session.service";
+import { DistributedLeaseService } from "../jobs/distributed-lease.service";
+
+/**
+ * Duration to hold the auth cleanup job lease (24 hours).
+ * Sufficient for daily cleanup jobs; gives ample time for slow runs.
+ */
+const AUTH_CLEANUP_LEASE_DURATION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Unique identifier for the auth cleanup job lease.
+ * Used across all instances to coordinate single execution.
+ */
+const AUTH_CLEANUP_JOB_NAME = "auth_cleanup";
 
 @Injectable()
 export class CleanupJob {
@@ -15,6 +28,7 @@ export class CleanupJob {
     private readonly sessionService: SessionService,
     private readonly auditService: AuthAuditService,
     private readonly prisma: PrismaService,
+    private readonly leaseService: DistributedLeaseService,
     configService: ConfigService,
   ) {
     this.challengeRetentionDays = Number(
@@ -30,8 +44,28 @@ export class CleanupJob {
       CronExpression.EVERY_DAY_AT_MIDNIGHT,
   )
   async deleteExpiredSessions(): Promise<void> {
-    const deleted = await this.sessionService.deleteExpired();
-    this.logger.log(`Removed ${deleted} expired authentication session(s)`);
+    const leaseResult = await this.leaseService.acquireLease(
+      AUTH_CLEANUP_JOB_NAME,
+      AUTH_CLEANUP_LEASE_DURATION_MS,
+    );
+
+    if (!leaseResult.acquired) {
+      this.logger.debug(
+        `Auth cleanup lease held by another instance (${leaseResult.owner}); skipping session cleanup`,
+      );
+      return;
+    }
+
+    try {
+      const deleted = await this.sessionService.deleteExpired();
+      this.logger.log(`Removed ${deleted} expired authentication session(s)`);
+    } finally {
+      // Renewal: extend the lease before exiting
+      await this.leaseService.renewLease(
+        AUTH_CLEANUP_JOB_NAME,
+        AUTH_CLEANUP_LEASE_DURATION_MS,
+      );
+    }
   }
 
   @Cron(
@@ -39,8 +73,28 @@ export class CleanupJob {
       CronExpression.EVERY_DAY_AT_2AM,
   )
   async deleteOldChallenges(): Promise<void> {
-    const deleted = await this.cleanupChallenges();
-    this.logger.log(`Removed ${deleted} old challenge record(s)`);
+    const leaseResult = await this.leaseService.acquireLease(
+      AUTH_CLEANUP_JOB_NAME,
+      AUTH_CLEANUP_LEASE_DURATION_MS,
+    );
+
+    if (!leaseResult.acquired) {
+      this.logger.debug(
+        `Auth cleanup lease held by another instance (${leaseResult.owner}); skipping challenge cleanup`,
+      );
+      return;
+    }
+
+    try {
+      const deleted = await this.cleanupChallenges();
+      this.logger.log(`Removed ${deleted} old challenge record(s)`);
+    } finally {
+      // Renewal: extend the lease before exiting
+      await this.leaseService.renewLease(
+        AUTH_CLEANUP_JOB_NAME,
+        AUTH_CLEANUP_LEASE_DURATION_MS,
+      );
+    }
   }
 
   @Cron(
@@ -48,10 +102,68 @@ export class CleanupJob {
       CronExpression.EVERY_DAY_AT_3AM,
   )
   async deleteOldAuditEvents(): Promise<void> {
-    const deleted = await this.auditService.cleanupOldEvents(
-      this.auditRetentionDays,
+    const leaseResult = await this.leaseService.acquireLease(
+      AUTH_CLEANUP_JOB_NAME,
+      AUTH_CLEANUP_LEASE_DURATION_MS,
     );
-    this.logger.log(`Removed ${deleted} old auth audit event(s)`);
+
+    if (!leaseResult.acquired) {
+      this.logger.debug(
+        `Auth cleanup lease held by another instance (${leaseResult.owner}); skipping audit cleanup`,
+      );
+      return;
+    }
+
+    try {
+      const deleted = await this.auditService.cleanupOldEvents(
+        this.auditRetentionDays,
+      );
+      this.logger.log(`Removed ${deleted} old auth audit event(s)`);
+    } finally {
+      // Renewal: extend the lease before exiting
+      await this.leaseService.renewLease(
+        AUTH_CLEANUP_JOB_NAME,
+        AUTH_CLEANUP_LEASE_DURATION_MS,
+      );
+    }
+  }
+
+  @Cron(
+    process.env.AUTH_WALLET_ROTATION_CLEANUP_CRON ??
+      CronExpression.EVERY_DAY_AT_2AM,
+  )
+  async deleteOldWalletRotations(): Promise<void> {
+    const deleted = await this.cleanupWalletRotations();
+    this.logger.log(`Removed ${deleted} old wallet rotation record(s)`);
+  }
+
+  /**
+   * Delete wallet rotations whose deadline passed more than the challenge
+   * retention window ago, whatever their outcome.
+   *
+   * A rotation row holds both wallet addresses in the clear; once the
+   * rotation can no longer be completed it is only evidence, and the durable
+   * evidence is the `user.wallet_rotated` audit record, which holds hashes.
+   *
+   * @returns Number of rotations deleted
+   */
+  async cleanupWalletRotations(now: Date = new Date()): Promise<number> {
+    try {
+      const cutoff = new Date(
+        now.getTime() - this.challengeRetentionDays * 24 * 60 * 60 * 1000,
+      );
+      const result = await this.prisma.walletRotation.deleteMany({
+        where: { expiresAt: { lt: cutoff } },
+      });
+      return result.count;
+    } catch (error) {
+      this.logger.error(
+        `Wallet rotation cleanup failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return 0;
+    }
   }
 
   /**

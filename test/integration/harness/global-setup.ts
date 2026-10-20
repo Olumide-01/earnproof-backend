@@ -74,7 +74,9 @@ async function assertMigrationsRecorded(
         `,
     );
 
-    const applied = new Set(rows.map((row) => row.migration_name));
+    const applied = new Set(
+      (rows as Array<{ migration_name: string }>).map((row) => row.migration_name),
+    );
     const missing = expected.filter((name) => !applied.has(name));
 
     if (missing.length > 0) {

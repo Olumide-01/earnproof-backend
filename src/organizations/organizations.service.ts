@@ -1,5 +1,4 @@
 import {
-  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -7,14 +6,22 @@ import {
 import { ResourceStatus } from "@prisma/client";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { PrismaService } from "../database/prisma.service";
+import { OrganizationQuotaService } from "../quotas/organization-quota.service";
+import { ConflictException } from "../common/exceptions/domain.exceptions";
 import { CreateOrganizationDto } from "./dto/create-organization.dto";
 import { ListOrganizationsDto } from "./dto/list-organizations.dto";
 import { OrganizationResponseDto } from "./dto/organization-response.dto";
 import { UpdateOrganizationDto } from "./dto/update-organization.dto";
+import { lifecycleStateOf } from "./organization-lifecycle.policy";
+import { OrganizationMembersService } from "./organization-members.service";
 
 @Injectable()
 export class OrganizationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly quotas: OrganizationQuotaService,
+    private readonly membersService: OrganizationMembersService,
+  ) {}
 
   async createOrganization(
     user: AuthenticatedUser,
@@ -30,7 +37,7 @@ export class OrganizationsService {
     });
 
     if (existing) {
-      throw new ConflictException(
+      throw new ForbiddenException(
         `Organization with slug "${input.slug}" already exists`,
       );
     }
@@ -42,6 +49,18 @@ export class OrganizationsService {
         website: input.website || null,
         createdById: user.id,
         status: ResourceStatus.PENDING,
+        revision: 0,
+      },
+    });
+
+    // Create initial OWNER membership for creator
+    await this.prisma.organizationMember.create({
+      data: {
+        organizationId: org.id,
+        userId: user.id,
+        role: "OWNER",
+        status: ResourceStatus.ACTIVE,
+        joinedAt: new Date(),
       },
     });
 
@@ -60,22 +79,54 @@ export class OrganizationsService {
     organizationId: string,
     input: UpdateOrganizationDto,
   ): Promise<OrganizationResponseDto> {
-    await this.getVisibleOrganization(user, organizationId);
+    const current = await this.getVisibleOrganization(user, organizationId);
+    if (current.archivedAt || current.deletedAt) {
+      throw new ConflictException(
+        "Organization is archived; restore it before changing its profile",
+        current.revision,
+      );
+    }
 
-    const updated = await this.prisma.organization.update({
-      where: { id: organizationId },
+    // Attempt optimistic update with revision check
+    const updated = await this.prisma.organization.updateMany({
+      where: {
+        id: organizationId,
+        revision: input.expectedRevision,
+      },
       data: {
         ...(input.name && { name: input.name }),
         ...(input.website !== undefined && { website: input.website || null }),
+        revision: input.expectedRevision + 1,
       },
+    });
+
+    // If no records were updated, the revision didn't match
+    if (updated.count === 0) {
+      const current = await this.prisma.organization.findUnique({
+        where: { id: organizationId },
+      });
+      if (!current) {
+        throw new NotFoundException(
+          `Organization with ID "${organizationId}" not found`,
+        );
+      }
+      throw new ConflictException(
+        "Organization has been modified by another request. Please refresh and retry.",
+        current.revision,
+      );
+    }
+
+    const result = await this.prisma.organization.findUniqueOrThrow({
+      where: { id: organizationId },
     });
 
     // Log audit event
     await this.createAuditLog(user, "UPDATE", "Organization", organizationId, {
       changes: input,
+      revision: result.revision,
     });
 
-    return this.toResponseDto(updated);
+    return this.toResponseDto(result);
   }
 
   async getOrganization(
@@ -91,6 +142,21 @@ export class OrganizationsService {
       ...this.toResponseDto(org),
       issuerCount,
     };
+  }
+
+  /**
+   * Current quota usage and reset context. Same access rule as
+   * {@link getOrganization}: the creator or an ADMIN. Counts and limits only —
+   * no resource identifiers.
+   */
+  async getUsage(user: AuthenticatedUser, organizationId: string) {
+    const org = await this.getOrganizationById(organizationId);
+    if (user.role !== "ADMIN" && org.createdById !== user.id) {
+      throw new ForbiddenException(
+        "You do not have permission to access this organization",
+      );
+    }
+    return this.quotas.getUsage(organizationId);
   }
 
   async listOrganizations(
@@ -111,9 +177,14 @@ export class OrganizationsService {
       where.status = query.status;
     }
 
-    // Non-admins only see organizations they created
+    // Non-admins see:
+    // 1. Organizations they created
+    // 2. Organizations where they are members
     if (user.role !== "ADMIN") {
-      where.createdById = user.id;
+      where.OR = [
+        { createdById: user.id },
+        { members: { some: { userId: user.id } } },
+      ];
     }
 
     const [items, total] = await Promise.all([
@@ -146,6 +217,22 @@ export class OrganizationsService {
     };
   }
 
+  async deleteOrganization(
+    user: AuthenticatedUser,
+    organizationId: string,
+  ): Promise<void> {
+    await this.getVisibleOrganization(user, organizationId);
+
+    await this.prisma.organization.update({
+      where: { id: organizationId },
+      data: { status: ResourceStatus.DELETED },
+    });
+
+    await this.createAuditLog(user, "DELETE", "Organization", organizationId, {
+      deletedAt: new Date().toISOString(),
+    });
+  }
+
   async getOrganizationById(organizationId: string) {
     const org = await this.prisma.organization.findUnique({
       where: { id: organizationId },
@@ -161,21 +248,43 @@ export class OrganizationsService {
   }
 
   /**
-   * Fetch ownership and existence in one scoped query. A non-admin receives
-   * the same 404 for another tenant and for an absent/deleted resource, so a
-   * denied request cannot become an existence oracle.
+   * Fetch organization with membership-aware authorization.
+   * A user can view an organization if they are:
+   * - A global admin
+   * - The creator
+   * - A member (any role)
+   * Non-authorized users receive 404 (information hiding).
    */
   private async getVisibleOrganization(
     user: AuthenticatedUser,
     organizationId: string,
   ) {
-    const org = await this.prisma.organization.findFirst({
-      where: user.role === "ADMIN" ? { id: organizationId } : {
-        id: organizationId,
-        createdById: user.id,
-      },
+    const org = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
     });
-    if (!org) throw new NotFoundException("Organization not found");
+
+    if (!org) {
+      throw new NotFoundException("Organization not found");
+    }
+
+    // Check authorization
+    if (user.role === "ADMIN") {
+      return org;
+    }
+
+    if (org.createdById === user.id) {
+      return org;
+    }
+
+    // Check membership
+    const canView = await this.membersService.canViewOrganization(
+      user,
+      organizationId,
+    );
+    if (!canView) {
+      throw new NotFoundException("Organization not found");
+    }
+
     return org;
   }
 
@@ -186,9 +295,17 @@ export class OrganizationsService {
       slug: org.slug,
       website: org.website,
       status: org.status,
+      revision: org.revision,
       createdById: org.createdById,
       createdAt: org.createdAt,
       updatedAt: org.updatedAt,
+      lifecycleState: lifecycleStateOf({
+        archivedAt: org.archivedAt ?? null,
+        deletedAt: org.deletedAt ?? null,
+      }),
+      archivedAt: org.archivedAt ?? null,
+      legalHold: Boolean(org.legalHoldAt),
+      deletedAt: org.deletedAt ?? null,
     };
   }
 

@@ -80,3 +80,25 @@ export class WebhookException extends StableHttpException {
     super(ApiErrorCode.INVALID_INPUT, message, status);
   }
 }
+
+/**
+ * Raised when an optimistic update fails due to a revision mismatch.
+ * Indicates that the client's view of the resource is stale and needs
+ * to be refreshed before retrying the update.
+ */
+export interface ConflictErrorBody {
+  code: ApiErrorCode;
+  message: string;
+  currentRevision: number;
+}
+
+export class ConflictException extends HttpException {
+  constructor(message: string, currentRevision: number) {
+    const body: ConflictErrorBody = {
+      code: ApiErrorCode.CONFLICT,
+      message,
+      currentRevision,
+    };
+    super(body, HttpStatus.CONFLICT);
+  }
+}

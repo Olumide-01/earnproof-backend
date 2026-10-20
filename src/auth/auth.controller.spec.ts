@@ -1,4 +1,4 @@
-import { AuthController } from "./auth.controller";
+﻿import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
 import { AuthenticatedSession } from "./auth.types";
 import { SessionService } from "./session.service";
@@ -14,7 +14,7 @@ describe("AuthController", () => {
         expiresAt,
       }),
     } as unknown as SessionService;
-    const controller = new AuthController(authService, sessionService);
+    const controller = new AuthController(authService, sessionService, { issue: jest.fn().mockResolvedValue({ token: 'tok', expiresAt: new Date() }) } as never);
     const session: AuthenticatedSession = {
       sessionId: "old-session",
       id: "user-1",
@@ -29,6 +29,6 @@ describe("AuthController", () => {
       sessionId: "new-session",
       expiresAt,
     });
-    expect(sessionService.rotate).toHaveBeenCalledWith("old-session", session);
+    expect(sessionService.rotate).toHaveBeenCalledWith("old-session", session, undefined, undefined);
   });
 });

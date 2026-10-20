@@ -9,6 +9,10 @@ import {
 } from "@nestjs/throttler";
 import { Request } from "express";
 import { SessionIdentity, SessionService } from "../../auth/session.service";
+import {
+  THROTTLE_COST_KEY,
+  ThrottleCostResolver,
+} from "../rate-limit/throttle-cost.decorator";
 
 const RATE_LIMIT_SESSION_CACHE = Symbol("rateLimitSessionCache");
 
@@ -76,14 +80,63 @@ export class RoleAwareThrottlerGuard extends ThrottlerGuard {
       .getRequest<RateLimitRequest>();
     const isAuthenticated = Boolean(await this.authenticatedSession(request));
 
-    if (!isAuthenticated || this.authenticatedMultiplier <= 1) {
-      return super.handleRequest(requestProps);
+    const limit =
+      isAuthenticated && this.authenticatedMultiplier > 1
+        ? Math.floor(requestProps.limit * this.authenticatedMultiplier)
+        : requestProps.limit;
+
+    // A batch route declares a per-request cost (its item count) via
+    // @ThrottleCost. Charge the bucket that cost so a batch of N is throttled
+    // as N single verifications, not as one call. Pre-charge cost-1 hits
+    // against the same key, then let the base guard apply the final hit and
+    // decide — so the 429, the Retry-After, and the X-RateLimit headers all
+    // reflect the true consumption with no logic duplicated here.
+    const cost = this.resolveCost(request, requestProps);
+    if (cost > 1) {
+      const throttlerName = requestProps.throttler.name ?? "default";
+      const tracker = await requestProps.getTracker(
+        request,
+        requestProps.context,
+      );
+      const key = requestProps.generateKey(
+        requestProps.context,
+        tracker,
+        throttlerName,
+      );
+      for (let i = 0; i < cost - 1; i += 1) {
+        await this.storageService.increment(
+          key,
+          requestProps.ttl,
+          limit,
+          requestProps.blockDuration,
+          throttlerName,
+        );
+      }
     }
 
-    const scaled: ThrottlerRequest = {
-      ...requestProps,
-      limit: Math.floor(requestProps.limit * this.authenticatedMultiplier),
-    };
-    return super.handleRequest(scaled);
+    return super.handleRequest({ ...requestProps, limit });
+  }
+
+  /**
+   * The throttle cost of a request: 1 for an ordinary route, or the value the
+   * route's @ThrottleCost resolver derives from the (already validated, already
+   * bounded) request body. Clamped to at least 1 and never allowed to be a
+   * non-finite number, so a resolver bug cannot make a request free or infinite.
+   */
+  private resolveCost(
+    request: RateLimitRequest,
+    requestProps: ThrottlerRequest,
+  ): number {
+    const resolver = this.reflector.getAllAndOverride<
+      ThrottleCostResolver | undefined
+    >(THROTTLE_COST_KEY, [
+      requestProps.context.getHandler(),
+      requestProps.context.getClass(),
+    ]);
+    if (!resolver) return 1;
+
+    const raw = resolver(request);
+    if (!Number.isFinite(raw)) return 1;
+    return Math.max(1, Math.floor(raw));
   }
 }

@@ -202,13 +202,15 @@ describe("AnchoringReconcilerService", () => {
 
       // Should NOT auto-repair (no status update).
       expect(prisma.proof.update).not.toHaveBeenCalled();
-      // Should create a FAILED intent for operator visibility.
+      // Should create a QUARANTINED intent for operator visibility.
       expect(prisma.anchoringIntent.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
             proofId: "proof_1",
-            status: AnchoringStatus.FAILED,
+            status: AnchoringStatus.QUARANTINED,
             permanentError: true,
+            quarantineReasonCode: "MANUAL_REVIEW",
+            quarantineDecision: "PENDING",
           }),
         }),
       );

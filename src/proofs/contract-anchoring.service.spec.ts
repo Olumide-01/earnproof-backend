@@ -4,6 +4,7 @@ import {
   ContractAnchoringService,
 } from "./contract-anchoring.service";
 import { sha256 } from "../common/crypto/hash";
+import { CircuitBreakerRegistry } from "../common/resilience/circuit-breaker.registry";
 
 // The REAL child_process.execFile carries a `util.promisify.custom` symbol
 // so that `promisify(execFile)` — used internally by ContractAnchoringService
@@ -72,12 +73,15 @@ const DEFAULT_CONFIG: Required<ConfigOverrides> = {
   "contractAnchoring.schemaVersion": 1,
 };
 
-function buildService(overrides: ConfigOverrides = {}) {
+function buildService(
+  overrides: ConfigOverrides & Record<string, unknown> = {},
+  registry?: CircuitBreakerRegistry,
+) {
   const config = { ...DEFAULT_CONFIG, ...overrides };
   const configService = {
     get: (key: string) => (config as Record<string, unknown>)[key],
   } as unknown as ConfigService;
-  return new ContractAnchoringService(configService);
+  return new ContractAnchoringService(configService, registry);
 }
 
 // The REAL child_process.execFile has a `util.promisify.custom` symbol that
@@ -449,4 +453,71 @@ describe("ContractAnchoringService", () => {
   // is nothing to test here without first adding that behavior to the
   // service, which is out of scope for a test-coverage issue — see this PR's
   // description for the full disclosure and a suggested follow-up issue.
+
+  describe("circuit breaker (issue #203)", () => {
+    /** Fails every execFile call with a transient error until reset. */
+    function failEveryCall(message = "rpc timeout") {
+      mockExecFile.mockImplementation(
+        (
+          _cmd: string,
+          _args: string[],
+          _opts: unknown,
+          callback: (error: Error | null, stdout: string) => void,
+        ) => callback(new Error(message), ""),
+      );
+    }
+
+    const circuitConfig = {
+      "contractAnchoring.circuitBreaker.failureThreshold": 2,
+      "contractAnchoring.circuitBreaker.openDurationMs": 60_000,
+    };
+
+    it("opens after repeated transient failures, then refuses without touching the CLI", async () => {
+      const registry = new CircuitBreakerRegistry();
+      const service = buildService(circuitConfig, registry);
+      failEveryCall();
+
+      // Two transient failures reach the failure threshold.
+      await service.anchorProof(proofInput);
+      await service.anchorProof(proofInput);
+      expect(service.circuitState("register")).toBe("open");
+
+      mockExecFile.mockClear();
+      const result = await service.anchorProof(proofInput);
+      // Refused by the open circuit: reported as circuit_open, CLI not called.
+      expect(result).toEqual({ anchored: false, reason: "circuit_open" });
+      expect(mockExecFile).not.toHaveBeenCalled();
+    });
+
+    it("does not open on a permanent contract error", async () => {
+      const registry = new CircuitBreakerRegistry();
+      const service = buildService(circuitConfig, registry);
+      failEveryCall("proof already registered");
+
+      for (let i = 0; i < 5; i += 1) {
+        await service.anchorProof(proofInput);
+      }
+      // The dependency answered every time; the circuit stays closed.
+      expect(service.circuitState("register")).toBe("closed");
+    });
+
+    it("tracks register, revoke, and read as independent circuits", async () => {
+      const registry = new CircuitBreakerRegistry();
+      const service = buildService(circuitConfig, registry);
+      failEveryCall();
+
+      await service.anchorProof(proofInput);
+      await service.anchorProof(proofInput);
+
+      expect(service.circuitState("register")).toBe("open");
+      // A revoke circuit is untouched by register failures.
+      expect(service.circuitState("revoke")).toBe("closed");
+      expect(service.circuitState("read")).toBe("closed");
+    });
+
+    it("reports closed when no registry is wired (breaker disabled)", () => {
+      const service = buildService();
+      expect(service.circuitState("register")).toBe("closed");
+    });
+  });
 });

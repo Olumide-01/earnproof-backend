@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEPLOYMENT_MANIFEST_MAX_BYTES } from "./deployment-manifest";
 
 /**
  * ──────────────────────────────────────────────────────────────────────────
@@ -40,14 +41,79 @@ const secret = (minLength: number = 1) =>
     });
 
 // ── Helper: Validate cron expression format ──
-// Basic validation: must have 5 or 6 space-separated fields (quartz format)
-// Each field is numeric or wildcard, with optional ranges/lists
-const cronExpression = z
-  .string()
-  .regex(
-    /^(\*|[0-9,/-]+)\s+(\*|[0-9,/-]+)\s+(\*|[0-9,/-]+)\s+(\*|[0-9,/-]+)\s+(\*|[0-9,/-]+)(?:\s+(\*|[0-9,/-]+))?$/,
-    "CRON_VARIABLE must be a valid cron expression (5 or 6 space-separated fields)",
-  );
+// NestJS @Cron() accepts standard cron format (5 fields: minute hour day month weekday)
+// and also supports seconds field (6 fields total). Validates both field count and
+// semantic constraints: minute/hour/day/month/weekday/second ranges, step syntax, and
+// day-of-month vs day-of-week mutual exclusivity (at most one can be non-*).
+const cronExpression = z.string().refine(
+  (value) => {
+    const fields = value.trim().split(/\s+/);
+    if (fields.length < 5 || fields.length > 6) return false;
+
+    // Extract fields based on count: if 6 fields, first is second; if 5, no second
+    let second, minute, hour, day, month, weekday;
+    if (fields.length === 6) {
+      [second, minute, hour, day, month, weekday] = fields;
+    } else {
+      [minute, hour, day, month, weekday] = fields;
+      second = null;
+    }
+
+    // Helper: validate a single cron field
+    const validateField = (field: string, min: number, max: number): boolean => {
+      if (field === "*") return true;
+      // Handle step syntax: */n or start-end/n
+      if (field.includes("/")) {
+        const [rangeStr, stepStr] = field.split("/");
+        const step = parseInt(stepStr, 10);
+        if (!Number.isInteger(step) || step <= 0) return false;
+        if (rangeStr === "*") return true;
+        // For ranges with steps, just validate the base range exists
+        return validateField(rangeStr, min, max);
+      }
+      // Handle ranges: start-end
+      if (field.includes("-")) {
+        const [startStr, endStr] = field.split("-");
+        const start = parseInt(startStr, 10);
+        const end = parseInt(endStr, 10);
+        return (
+          Number.isInteger(start) &&
+          Number.isInteger(end) &&
+          start >= min &&
+          end <= max &&
+          start <= end
+        );
+      }
+      // Handle lists: a,b,c
+      if (field.includes(",")) {
+        return field.split(",").every((part) => validateField(part, min, max));
+      }
+      // Single number
+      const num = parseInt(field, 10);
+      return Number.isInteger(num) && num >= min && num <= max;
+    };
+
+    // Validate each field with its allowed range
+    if (second && !validateField(second, 0, 59)) return false;
+    if (!validateField(minute, 0, 59)) return false;
+    if (!validateField(hour, 0, 23)) return false;
+    if (!validateField(day, 1, 31)) return false;
+    if (!validateField(month, 1, 12)) return false;
+    if (!validateField(weekday, 0, 7)) return false; // 0 or 7 = Sunday
+
+    // Semantic check: day-of-month and day-of-week must not both be restricted
+    // (cron spec: at most one of these two fields should be non-*)
+    const dayRestricted = day !== "*";
+    const weekdayRestricted = weekday !== "*";
+    if (dayRestricted && weekdayRestricted) return false;
+
+    return true;
+  },
+  {
+    message:
+      "CRON_VARIABLE must be a valid cron expression (minute hour day month weekday [second], with field ranges and semantic validity)",
+  },
+);
 
 // ── Helper: Stellar contract ID format ──
 const stellarContractId = z.string().regex(
@@ -74,12 +140,19 @@ const encryptionKey = z.string().refine((value) => {
 }, "PAYMENT_ENCRYPTION_KEY must be 32 bytes encoded as base64 or 64-char hex");
 
 // ── Helper: Positive integer (for ports, limits) ──
-const positiveInt = (fieldName: string) =>
-  z
+const positiveInt = (fieldNameOrMin: string | number, max?: number, defaultValue?: number) => {
+  if (typeof fieldNameOrMin === "number") {
+    let schema = z.coerce.number().int().min(fieldNameOrMin);
+    if (max !== undefined) schema = schema.max(max);
+    if (defaultValue !== undefined) return schema.default(defaultValue);
+    return schema;
+  }
+  return z
     .coerce.number()
-    .int(`${fieldName} must be an integer`)
-    .positive(`${fieldName} must be a positive integer`)
-    .finite(`${fieldName} must be a finite number`);
+    .int(`${fieldNameOrMin} must be an integer`)
+    .positive(`${fieldNameOrMin} must be a positive integer`)
+    .finite(`${fieldNameOrMin} must be a finite number`);
+};
 
 // ── Helper: Non-negative integer (includes zero) ──
 const nonnegativeInt = (fieldName: string) =>
@@ -98,22 +171,28 @@ const retentionDays = (fieldName: string) =>
     .max(3650, `${fieldName} must be at most 3650 days (maximum 10 years)`)
     .finite(`${fieldName} must be a finite number`);
 
+/** Optional bounded integer with a default, for operational limits. */
+const boundedInt = (min: number, max: number, fallback: number) =>
+  z.coerce.number().int().min(min).max(max).optional().default(fallback);
+
 // ── Helper: Rate limit counter validator ──
+// Bounds: 1–1000 per window. Higher values defeat the purpose of rate limiting.
 const rateLimitCounter = (fieldName: string) =>
   z
     .coerce.number()
     .int(`${fieldName} must be an integer`)
     .positive(`${fieldName} must be positive (at least 1)`)
-    .max(1000000, `${fieldName} is unreasonably large`)
+    .max(1000, `${fieldName} must not exceed 1000 (rate limiting would be ineffective)`)
     .finite(`${fieldName} must be a finite number`);
 
 // ── Helper: Time window in milliseconds ──
+// Bounds: > 0 and ≤ 1 hour. Windows > 1 hour make rate limiting ineffective.
 const timeWindowMs = (fieldName: string) =>
   z
     .coerce.number()
     .int(`${fieldName} must be an integer`)
     .positive(`${fieldName} must be positive`)
-    .max(86400000, `${fieldName} must not exceed 24 hours (86400000ms)`)
+    .max(3600000, `${fieldName} must not exceed 1 hour (3600000ms), or rate limiting becomes ineffective`)
     .finite(`${fieldName} must be a finite number`);
 
 // ── Helper: Health probe timeout validator ──
@@ -184,6 +263,24 @@ const envSchema = z.object({
     .min(1, "STELLAR_NETWORK_PASSPHRASE must be non-empty")
     .default("Test SDF Network ; September 2015"),
 
+  /** Ledgers behind the last verified checkpoint that a divergence may reach */
+  STELLAR_FINALITY_HISTORY_LEDGERS: z
+    .coerce.number()
+    .int("STELLAR_FINALITY_HISTORY_LEDGERS must be an integer")
+    .positive("STELLAR_FINALITY_HISTORY_LEDGERS must be positive")
+    .max(1_000_000, "STELLAR_FINALITY_HISTORY_LEDGERS is unreasonably large")
+    .finite("STELLAR_FINALITY_HISTORY_LEDGERS must be a finite number")
+    .default(17_280),
+
+  /** Horizon pages one ledger reconciliation read may walk */
+  STELLAR_FINALITY_RECONCILIATION_MAX_PAGES: z
+    .coerce.number()
+    .int("STELLAR_FINALITY_RECONCILIATION_MAX_PAGES must be an integer")
+    .positive("STELLAR_FINALITY_RECONCILIATION_MAX_PAGES must be positive")
+    .max(100, "STELLAR_FINALITY_RECONCILIATION_MAX_PAGES must not exceed 100")
+    .finite("STELLAR_FINALITY_RECONCILIATION_MAX_PAGES must be a finite number")
+    .default(10),
+
   // ──────────────────────────────────────────────────────────────────────
   // SECRETS (Required, never logged or exposed in error messages)
   // ──────────────────────────────────────────────────────────────────────
@@ -193,6 +290,16 @@ const envSchema = z.object({
 
   /** Credential signature verification secret (minimum 8 chars, non-empty) */
   CREDENTIAL_SIGNING_SECRET: secret(8),
+  CREDENTIAL_SIGNING_SECRET_PREVIOUS: optionalString(secret(8)),
+  CREDENTIAL_SIGNING_KEY_ID: optionalString(
+    z.string().regex(/^[A-Za-z0-9._-]{1,100}$/),
+  ),
+  CREDENTIAL_SIGNING_PREVIOUS_KEY_ID: optionalString(
+    z.string().regex(/^[A-Za-z0-9._-]{1,100}$/),
+  ),
+  CREDENTIAL_SIGNING_KEY_OVERLAP_DAYS: retentionDays(
+    "CREDENTIAL_SIGNING_KEY_OVERLAP_DAYS",
+  ).default(30),
 
   /** Payment encryption key (32 bytes as hex or base64) */
   PAYMENT_ENCRYPTION_KEY: encryptionKey,
@@ -291,6 +398,26 @@ const envSchema = z.object({
   ISSUER_REGISTRY_CONTRACT_ID: optionalString(stellarContractId),
 
   // ──────────────────────────────────────────────────────────────────────
+  // DEPLOYMENT MANIFEST (Optional)
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Deployment manifest JSON (network, contract addresses, artifact hashes).
+   * Only bounded here; its structure and consistency with the Stellar and
+   * contract variables are validated by deployment-manifest.ts and reported
+   * through readiness, so a bad manifest takes the replica out of rotation
+   * with a stable reason code instead of crash-looping it.
+   */
+  DEPLOYMENT_MANIFEST: optionalString(
+    z
+      .string()
+      .max(
+        DEPLOYMENT_MANIFEST_MAX_BYTES,
+        `DEPLOYMENT_MANIFEST must not exceed ${DEPLOYMENT_MANIFEST_MAX_BYTES} characters`,
+      ),
+  ),
+
+  // ──────────────────────────────────────────────────────────────────────
   // EARNPROOF INTEGRATION (Optional, used when anchoring is enabled)
   // ──────────────────────────────────────────────────────────────────────
 
@@ -314,12 +441,30 @@ const envSchema = z.object({
     "VERIFICATION_EVENT_RETENTION_DAYS",
   )
     .default(90),
+  WEBHOOK_MAX_DELIVERY_ATTEMPTS: boundedInt(1, 20, 5),
+  WEBHOOK_REDRIVE_MAX_BATCH: boundedInt(1, 100, 25),
+  PROOF_SHARE_TOKEN_MAX_TTL_MINUTES: boundedInt(5, 525_600, 10_080),
+  PROOF_SHARE_TOKEN_DEFAULT_TTL_MINUTES: boundedInt(5, 525_600, 1_440),
+  QUOTA_MAX_ACTIVE_API_KEYS: boundedInt(1, 10_000, 25),
+  QUOTA_MAX_WEBHOOKS: boundedInt(1, 1_000, 10),
+  QUOTA_PROOF_REQUESTS_PER_DAY: boundedInt(1, 10_000_000, 1_000),
+  QUOTA_SYNCS_PER_HOUR: boundedInt(1, 3_600, 12),
 
   /** Hash salt version for verification metadata privacy */
   VERIFICATION_HASH_SALT_VERSION: nonnegativeInt(
     "VERIFICATION_HASH_SALT_VERSION",
   )
     .default(0),
+
+  /** Maximum stored verification metadata events per proof in the budget window */
+  VERIFICATION_METADATA_BUDGET_PER_PROOF: rateLimitCounter(
+    "VERIFICATION_METADATA_BUDGET_PER_PROOF",
+  ).default(100),
+
+  /** Privacy-budget window for stored verification metadata */
+  VERIFICATION_METADATA_BUDGET_WINDOW_MS: timeWindowMs(
+    "VERIFICATION_METADATA_BUDGET_WINDOW_MS",
+  ).default(86400000),
 
   // ──────────────────────────────────────────────────────────────────────
   // DATA RETENTION (All retention durations validated at startup)
@@ -362,6 +507,28 @@ const envSchema = z.object({
     .default("false"),
 
   // ──────────────────────────────────────────────────────────────────────
+  // DATA RETENTION - PRESERVED RECORDS (not automatically swept)
+  // These have no override in practice but are included for completeness:
+  // Proofs, revocation evidence, and anchoring state must never be
+  // automatically deleted (they are evidence the protocol exists to produce).
+  // Operators may still configure these if extending defaults, but the
+  // retention.ts cleanup job respects the PRESERVED sweep mode regardless.
+  // ──────────────────────────────────────────────────────────────────────
+
+  /** Retention duration for proof credentials (days, 1–3650, PRESERVED = never auto-swept) */
+  RETENTION_PROOF_DAYS: optionalString(retentionDays("RETENTION_PROOF_DAYS")),
+
+  /** Retention duration for revocation evidence (days, 1–3650, PRESERVED = never auto-swept) */
+  RETENTION_REVOCATION_DAYS: optionalString(
+    retentionDays("RETENTION_REVOCATION_DAYS"),
+  ),
+
+  /** Retention duration for anchoring state (days, 1–3650, PRESERVED = never auto-swept) */
+  RETENTION_ANCHORING_STATE_DAYS: optionalString(
+    retentionDays("RETENTION_ANCHORING_STATE_DAYS"),
+  ),
+
+  // ──────────────────────────────────────────────────────────────────────
   // HEALTH CHECKS
   // ──────────────────────────────────────────────────────────────────────
 
@@ -371,6 +538,66 @@ const envSchema = z.object({
 
   /** Health probe result cache TTL (milliseconds) */
   HEALTH_CACHE_TTL_MS: nonnegativeInt("HEALTH_CACHE_TTL_MS").default(5000),
+
+  // ──────────────────────────────────────────────────────────────────────
+  // CLOCK SKEW MONITORING (#328) — measures only, never adjusts a clock
+  // ──────────────────────────────────────────────────────────────────────
+
+  CLOCK_SKEW_MONITOR_ENABLED: optionalString(z.enum(["true", "false"])),
+  CLOCK_SKEW_INTERVAL_MS: boundedInt(5_000, 3_600_000, 60_000),
+  CLOCK_SKEW_PROBE_TIMEOUT_MS: boundedInt(100, 30_000, 2_000),
+  CLOCK_SKEW_WARN_MS: boundedInt(1, 3_600_000, 2_000),
+  CLOCK_SKEW_CRITICAL_MS: boundedInt(2, 3_600_000, 10_000),
+  CLOCK_SKEW_MAX_ROUND_TRIP_MS: boundedInt(1, 60_000, 5_000),
+  CLOCK_SKEW_MAX_SAMPLE_AGE_MS: boundedInt(1_000, 86_400_000, 180_000),
+  CLOCK_SKEW_SUSTAIN_FOR_MS: boundedInt(0, 86_400_000, 300_000),
+  CLOCK_SKEW_CLEAR_AFTER_ASSESSMENTS: boundedInt(1, 100, 2),
+  CLOCK_SKEW_LEDGER_CLOSE_ALLOWANCE_MS: boundedInt(0, 120_000, 10_000),
+  CLOCK_SKEW_UNKNOWN_POLICY: z
+    .enum(["fail_closed", "fail_open"])
+    .optional()
+    .default("fail_open"),
+  CLOCK_SKEW_READINESS_IMPACT: z.enum(["none", "critical"]).optional().default("critical"),
+
+  // ──────────────────────────────────────────────────────────────────────
+  // OPERATIONAL METRIC ROLLUPS (#330)
+  // ──────────────────────────────────────────────────────────────────────
+
+  METRICS_ROLLUP_ENABLED: z.enum(["true", "false"]).optional().default("true"),
+  METRICS_ROLLUP_LATENESS_GRACE_MS: boundedInt(0, 3_600_000, 120_000),
+  METRICS_ROLLUP_SETTLE_DELAY_MS: boundedInt(0, 600_000, 30_000),
+  METRICS_ROLLUP_RAW_RETENTION_HOURS: boundedInt(2, 168, 6),
+  METRICS_ROLLUP_MINUTE_RETENTION_DAYS: boundedInt(1, 31, 3),
+  METRICS_ROLLUP_HOUR_RETENTION_DAYS: boundedInt(2, 731, 90),
+  METRICS_ROLLUP_DAY_RETENTION_DAYS: boundedInt(30, 3650, 730),
+
+  // ──────────────────────────────────────────────────────────────────────
+  // CONFIGURATION ROLLOUTS (#329)
+  // ──────────────────────────────────────────────────────────────────────
+
+  DEPLOYMENT_ENVIRONMENT: optionalString(
+    z.string().regex(/^[a-z][a-z0-9-]{0,31}$/, "DEPLOYMENT_ENVIRONMENT must be a lowercase slug"),
+  ),
+  CONFIG_SNAPSHOT_SIGNING_SECRET: optionalString(secret(32)),
+  CONFIG_ROLLOUT_MAX_GATE_EVIDENCE_AGE_MS: boundedInt(1_000, 86_400_000, 900_000),
+  CONFIG_ROLLOUT_GATE_VALIDITY_MS: boundedInt(1_000, 86_400_000, 3_600_000),
+  CONFIG_ROLLOUT_REQUIRED_GATE_CHECKS: optionalString(
+    z.string().regex(/^[a-z][a-z0-9_]{0,63}(,[a-z][a-z0-9_]{0,63}){0,15}$/, {
+      message: "CONFIG_ROLLOUT_REQUIRED_GATE_CHECKS must be a comma-separated list of snake_case names",
+    }),
+  ),
+  CONFIG_ROLLOUT_DEFAULT_STAGES: optionalString(
+    z.string().regex(/^\d{1,3}(,\d{1,3}){0,9}$/, {
+      message: "CONFIG_ROLLOUT_DEFAULT_STAGES must be a comma-separated list of percentages",
+    }),
+  ),
+
+  // ──────────────────────────────────────────────────────────────────────
+  // PAYMENT ACCOUNT ROTATION (#321)
+  // ──────────────────────────────────────────────────────────────────────
+
+  PAYMENT_ACCOUNT_ROTATION_CHALLENGE_TTL_MS: boundedInt(60_000, 3_600_000, 600_000),
+  PAYMENT_ACCOUNT_ROTATION_ROLLBACK_WINDOW_MS: boundedInt(0, 2_592_000_000, 86_400_000),
 
   // ──────────────────────────────────────────────────────────────────────
   // TESTING (Integration test harness only, not used in production)
@@ -436,6 +663,26 @@ const envSchema = z.object({
     .positive("RATE_LIMIT_AUTHENTICATED_MULTIPLIER must be positive")
     .finite("RATE_LIMIT_AUTHENTICATED_MULTIPLIER must be finite")
     .default(3),
+
+  /** Proof-verification abuse-control window */
+  PROOF_VERIFICATION_ABUSE_WINDOW_MS: timeWindowMs(
+    "PROOF_VERIFICATION_ABUSE_WINDOW_MS",
+  ).default(900000),
+
+  /** Unknown proof identifiers allowed per privacy-safe client in the window */
+  PROOF_VERIFICATION_UNKNOWN_LIMIT: rateLimitCounter(
+    "PROOF_VERIFICATION_UNKNOWN_LIMIT",
+  ).default(10),
+
+  /** Repeated verification attempts allowed per proof and client */
+  PROOF_VERIFICATION_REPEATED_LIMIT: rateLimitCounter(
+    "PROOF_VERIFICATION_REPEATED_LIMIT",
+  ).default(60),
+
+  /** Distinct proof identifiers allowed per privacy-safe client */
+  PROOF_VERIFICATION_DISTINCT_CLIENT_LIMIT: rateLimitCounter(
+    "PROOF_VERIFICATION_DISTINCT_CLIENT_LIMIT",
+  ).default(100),
 });
 
 /**
@@ -533,14 +780,14 @@ function checkCrossVariableInvariants(data: z.infer<typeof envSchema>) {
   // ────────────────────────────────────────────────────────────────────────
 
   if (data.NODE_ENV === "production" || data.NODE_ENV === "staging") {
-    // Invariant: Rate limit window must be < 1 hour in production-like profiles
-    // Risk: Overly long windows (e.g., 86400000ms = 24h) make rate limiting
-    // ineffective; attackers can spread abuse across the window without triggering limits.
+    // Invariant: Rate limit window must be ≤ 1 hour across all profiles
+    // Risk: Overly long windows make rate limiting ineffective; attackers can
+    // spread abuse across the window without triggering limits.
     const challengeWindowHours =
       data.AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS / (1000 * 60 * 60);
     if (challengeWindowHours > 1) {
       errors.push(
-        "Invalid configuration: AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS exceeds 1 hour in production-like profile (consider tightening)",
+        "Invalid configuration: AUTH_RATE_LIMIT_CHALLENGE_CREATION_WINDOW_MS exceeds 1 hour in production-like profile (must be ≤ 3600000ms)",
       );
     }
 
@@ -548,13 +795,12 @@ function checkCrossVariableInvariants(data: z.infer<typeof envSchema>) {
       data.AUTH_RATE_LIMIT_VERIFICATION_WINDOW_MS / (1000 * 60 * 60);
     if (verificationWindowHours > 1) {
       errors.push(
-        "Invalid configuration: AUTH_RATE_LIMIT_VERIFICATION_WINDOW_MS exceeds 1 hour in production-like profile (consider tightening)",
+        "Invalid configuration: AUTH_RATE_LIMIT_VERIFICATION_WINDOW_MS exceeds 1 hour in production-like profile (must be ≤ 3600000ms)",
       );
     }
 
     // Invariant: Rate limit counts must be reasonable
-    // Risk: Very high limits (e.g., 1000+ attempts per window) defeat the
-    // purpose of rate limiting.
+    // Risk: Very high limits defeat the purpose of rate limiting.
     if (data.AUTH_RATE_LIMIT_MAX_CHALLENGE_CREATIONS > 100) {
       errors.push(
         "Invalid configuration: AUTH_RATE_LIMIT_MAX_CHALLENGE_CREATIONS seems unreasonably high (>100) in production-like profile",
@@ -602,6 +848,54 @@ function checkCrossVariableInvariants(data: z.infer<typeof envSchema>) {
     );
   }
 
+  // Invariant: clock skew thresholds are ordered and samples outlive one interval.
+  // Risk: a critical threshold at or below the warning threshold makes the
+  // warning tier unreachable; a sample age shorter than the sampling interval
+  // makes every assessment UNKNOWN between samples.
+  if (data.CLOCK_SKEW_CRITICAL_MS <= data.CLOCK_SKEW_WARN_MS) {
+    errors.push(
+      "Invalid configuration: CLOCK_SKEW_CRITICAL_MS must be greater than CLOCK_SKEW_WARN_MS",
+    );
+  }
+  if (data.CLOCK_SKEW_MAX_SAMPLE_AGE_MS < data.CLOCK_SKEW_INTERVAL_MS) {
+    errors.push(
+      "Invalid configuration: CLOCK_SKEW_MAX_SAMPLE_AGE_MS must be at least CLOCK_SKEW_INTERVAL_MS",
+    );
+  }
+
+  // Invariant: each metric tier is retained long enough to be rolled up.
+  // Risk: deleting a lower tier before the tier above it has sealed would
+  // silently drop data from long-term charts.
+  const hourMs = 3_600_000;
+  const dayMs = 24 * hourMs;
+  const rawMs = data.METRICS_ROLLUP_RAW_RETENTION_HOURS * hourMs;
+  const minuteMs = data.METRICS_ROLLUP_MINUTE_RETENTION_DAYS * dayMs;
+  const hourTierMs = data.METRICS_ROLLUP_HOUR_RETENTION_DAYS * dayMs;
+  const dayTierMs = data.METRICS_ROLLUP_DAY_RETENTION_DAYS * dayMs;
+  if (!(rawMs < minuteMs && minuteMs < hourTierMs && hourTierMs < dayTierMs)) {
+    errors.push(
+      "Invalid configuration: METRICS_ROLLUP retention must increase strictly from raw to minute to hour to day",
+    );
+  }
+  const rollupHorizonMs =
+    data.METRICS_ROLLUP_LATENESS_GRACE_MS + data.METRICS_ROLLUP_SETTLE_DELAY_MS;
+  if (rawMs <= 60_000 + rollupHorizonMs + hourMs) {
+    errors.push(
+      "Invalid configuration: METRICS_ROLLUP_RAW_RETENTION_HOURS is shorter than the minute rollup horizon",
+    );
+  }
+
+  // Invariant: canary stages are strictly increasing percentages ending at 100.
+  if (data.CONFIG_ROLLOUT_DEFAULT_STAGES) {
+    const stages = data.CONFIG_ROLLOUT_DEFAULT_STAGES.split(",").map(Number);
+    const ordered = stages.every((stage, index) => index === 0 || stage > stages[index - 1]);
+    if (!ordered || stages[0] < 1 || stages[stages.length - 1] !== 100) {
+      errors.push(
+        "Invalid configuration: CONFIG_ROLLOUT_DEFAULT_STAGES must strictly increase from at least 1 and end at 100",
+      );
+    }
+  }
+
   // ────────────────────────────────────────────────────────────────────────
   // Return accumulated errors
   // ────────────────────────────────────────────────────────────────────────
@@ -632,6 +926,13 @@ function checkCrossVariableInvariants(data: z.infer<typeof envSchema>) {
  */
 const VERIFICATION_HASH_SALT_KEY_PATTERN = /^VERIFICATION_HASH_SALT_V\d+$/;
 
+/**
+ * Matches versioned payment encryption key keys: PAYMENT_ENCRYPTION_KEY_V0,
+ * PAYMENT_ENCRYPTION_KEY_V1, etc. Like salts, these are dynamically numbered
+ * and loaded until a gap is found. Each must be a valid 32-byte encryption key.
+ */
+const PAYMENT_ENCRYPTION_KEY_KEY_PATTERN = /^PAYMENT_ENCRYPTION_KEY_V\d+$/;
+
 const versionedSalt = z
   .string()
   .min(16, "must be at least 16 characters (used as an HMAC salt)");
@@ -655,6 +956,25 @@ function validateVersionedSalts(config: Record<string, unknown>): string[] {
   return errors;
 }
 
+/**
+ * Validates PAYMENT_ENCRYPTION_KEY_V* keys, which are dynamically numbered
+ * similar to salts but represent 32-byte encryption keys.
+ * Returns field-level error strings (empty array if all valid).
+ */
+function validateVersionedPaymentKeys(config: Record<string, unknown>): string[] {
+  const errors: string[] = [];
+  for (const key of Object.keys(config)) {
+    if (!PAYMENT_ENCRYPTION_KEY_KEY_PATTERN.test(key)) continue;
+    const value = config[key];
+    if (value === undefined || value === "") continue; // treat as absent
+    const result = encryptionKey.safeParse(value);
+    if (!result.success) {
+      errors.push(`${key} must be 32 bytes encoded as base64 or 64-char hex`);
+    }
+  }
+  return errors;
+}
+
 export function validateEnv(config: Record<string, unknown>) {
   const parsed = envSchema.safeParse(config);
 
@@ -670,12 +990,23 @@ export function validateEnv(config: Record<string, unknown>) {
   }
 
   const saltErrors = validateVersionedSalts(config);
-  if (saltErrors.length > 0) {
+  const paymentKeyErrors = validateVersionedPaymentKeys(config);
+  
+  if (saltErrors.length > 0 || paymentKeyErrors.length > 0) {
+    const allErrors = [...saltErrors, ...paymentKeyErrors];
     throw new Error(
-      `Invalid environment:\n${saltErrors.map((e) => `  - ${e}`).join("\n")}`,
+      `Invalid environment:\n${allErrors.map((e) => `  - ${e}`).join("\n")}`,
     );
   }
 
+  if (
+    parsed.data.PROOF_SHARE_TOKEN_DEFAULT_TTL_MINUTES >
+    parsed.data.PROOF_SHARE_TOKEN_MAX_TTL_MINUTES
+  ) {
+    throw new Error(
+      "Invalid environment: PROOF_SHARE_TOKEN_DEFAULT_TTL_MINUTES must not exceed PROOF_SHARE_TOKEN_MAX_TTL_MINUTES",
+    );
+  }
   // Check cross-variable invariants after individual field validation
   checkCrossVariableInvariants(parsed.data);
 

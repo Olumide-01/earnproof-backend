@@ -12,6 +12,7 @@ import {
 import { ApiBearerAuth, ApiTags, ApiOperation, ApiResponse } from "@nestjs/swagger";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
+import { AuthenticatedRoute } from "../common/decorators/authorization-policy.decorator";
 import { AuthGuard } from "../common/guards/auth.guard";
 import { CreateTrustedSourceDto } from "./dto/create-trusted-source.dto";
 import { ListTrustedSourcesDto } from "./dto/list-trusted-sources.dto";
@@ -19,6 +20,7 @@ import { UpdateTrustedSourceDto } from "./dto/update-trusted-source.dto";
 import { TrustedSourcesService } from "./trusted-sources.service";
 
 @ApiBearerAuth()
+@AuthenticatedRoute({ ownership: "user" })
 @ApiTags("trusted-sources")
 @UseGuards(AuthGuard)
 @Controller("trusted-sources")
@@ -71,29 +73,34 @@ export class TrustedSourcesController {
   @Get()
   @ApiOperation({
     summary: "List user's trusted sources",
-    description: "Retrieve all trusted sources for the authenticated user with optional filtering",
+    description:
+      "Retrieve a cursor-paginated, deterministically ordered page of trusted sources " +
+      "for the authenticated user with optional filtering. Pass `pageInfo.nextCursor` " +
+      "from a response as the next request's `cursor`.",
   })
   @ApiResponse({
     status: 200,
-    description: "List of trusted sources",
+    description: "A page of trusted sources, plus pagination metadata.",
     schema: {
-      type: "array",
-      items: {
-        example: {
-          id: "ts_abc123",
-          sourceAddress: "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-          displayName: "My Employer Account",
-          sourceType: "stellar",
-          issuer: {
-            id: "issuer_123",
-            name: "Acme Corp",
+      example: {
+        data: [
+          {
+            id: "ts_abc123",
+            sourceAddress: "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+            displayName: "My Employer Account",
+            sourceType: "stellar",
+            issuer: {
+              id: "issuer_123",
+              name: "Acme Corp",
+              status: "ACTIVE",
+              isTrusted: true,
+            },
             status: "ACTIVE",
-            isTrusted: true,
+            createdAt: "2026-08-24T10:00:00.000Z",
+            updatedAt: "2026-08-24T10:00:00.000Z",
           },
-          status: "ACTIVE",
-          createdAt: "2026-08-24T10:00:00.000Z",
-          updatedAt: "2026-08-24T10:00:00.000Z",
-        },
+        ],
+        pageInfo: { hasMore: false, nextCursor: null },
       },
     },
   })

@@ -4,6 +4,7 @@ import { Test, TestingModule } from "@nestjs/testing";
 import { AuthTokenService } from "../auth/auth-token.service";
 import { AuthGuard } from "../common/guards/auth.guard";
 import { RoleGuard } from "../common/guards/role.guard";
+import { OrganizationLifecycleState } from "./organization-lifecycle.policy";
 import { OrganizationsController } from "./organizations.controller";
 import { OrganizationsService } from "./organizations.service";
 
@@ -27,6 +28,10 @@ describe("OrganizationsController", () => {
     createdById: mockUser.id,
     createdAt: new Date("2026-01-01"),
     updatedAt: new Date("2026-01-01"),
+    lifecycleState: OrganizationLifecycleState.LIVE,
+    archivedAt: null,
+    legalHold: false,
+    deletedAt: null,
   };
 
   beforeEach(async () => {

@@ -1,6 +1,7 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable } from "@nestjs/common";
 import { AuthEventType } from "@prisma/client";
 import { createHash } from "crypto";
+import { StructuredLogger } from "../common/logger";
 import { PrismaService } from "../database/prisma.service";
 
 /**
@@ -27,7 +28,7 @@ import { PrismaService } from "../database/prisma.service";
  */
 @Injectable()
 export class AuthAuditService {
-  private readonly logger = new Logger(AuthAuditService.name);
+  private readonly logger = new StructuredLogger(AuthAuditService.name);
 
   constructor(private readonly prisma: PrismaService) {}
 

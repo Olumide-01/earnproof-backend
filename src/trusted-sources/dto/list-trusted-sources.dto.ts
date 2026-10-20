@@ -1,7 +1,8 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
 import { IsOptional, IsString } from "class-validator";
+import { CursorPaginationQueryDto } from "../../common/pagination/pagination.dto";
 
-export class ListTrustedSourcesDto {
+export class ListTrustedSourcesDto extends CursorPaginationQueryDto {
   @ApiPropertyOptional({
     description: "Filter by source address (substring match)",
     example: "GB",

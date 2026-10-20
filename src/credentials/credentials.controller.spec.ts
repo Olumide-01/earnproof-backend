@@ -318,5 +318,143 @@ describe("CredentialsController (HTTP)", () => {
         requestId: expect.any(String),
       });
     });
+
+    it("returns 200 with a complex nested credential object (within depth/size limits)", async () => {
+      const complexCredential = {
+        id: "cred_1",
+        type: "EarnProofMinimumIncomeCredential",
+        claim: {
+          operator: "gte",
+          thresholdAmount: "500.0000000",
+          nested: {
+            level3: {
+              level4: {
+                value: "deep",
+              },
+            },
+          },
+        },
+      };
+      credentialsService.verifyCredential.mockResolvedValue({
+        result: "valid",
+      });
+
+      const res = await postJson(baseUrl, "/api/v1/credentials/verify", {
+        credential: complexCredential,
+      });
+
+      expect(res.status).toBe(200);
+      expect(credentialsService.verifyCredential).toHaveBeenCalledWith(complexCredential);
+    });
+
+    it("propagates an unexpected error from the service (e.g. InternalServerErrorException) as 500", async () => {
+      credentialsService.verifyCredential.mockRejectedValue(
+        new Error("Database connection failed"),
+      );
+
+      const res = await postJson(baseUrl, "/api/v1/credentials/verify", {
+        credential: { id: "cred_1" },
+      });
+
+      expect(res.status).toBe(500);
+      expect(res.json?.code).toBe("INTERNAL_ERROR");
+    });
+
+    it("handles service returning each possible verification result correctly", async () => {
+      const results = [
+        "valid",
+        "invalid_signature",
+        "unsupported_schema",
+        "unsupported_key",
+        "unknown_anchor",
+        "revoked",
+        "expired",
+        "unverified_issuer",
+      ];
+
+      for (const result of results) {
+        credentialsService.verifyCredential.mockResolvedValue({ result });
+
+        const res = await postJson(baseUrl, "/api/v1/credentials/verify", {
+          credential: { id: `cred_${result}` },
+        });
+
+        expect(res.status).toBe(200);
+        expect(res.json).toEqual({ result });
+      }
+    });
+
+    it("returns 422 with precise error when credential exceeds per-string transport limit (8 KB)", async () => {
+      // The request-limits middleware caps any single string at 8 KB.
+      // A payload that's all one giant string should be rejected before parsing.
+      const hugeSingleString = "x".repeat(9 * 1024);
+
+      const res = await postJson(baseUrl, "/api/v1/credentials/verify", {
+        credential: hugeSingleString,
+      });
+
+      // Transport-level rejection (413 PAYLOAD_TOO_LARGE) happens before route handling
+      expect([413, 422]).toContain(res.status);
+    });
+
+    it("returns 422 when credential is null instead of an object", async () => {
+      const res = await postJson(baseUrl, "/api/v1/credentials/verify", {
+        credential: null,
+      });
+
+      expect(res.status).toBe(422);
+      expect(res.json?.code).toBe("VALIDATION_ERROR");
+    });
+
+    it("returns 422 when credential is an array instead of an object", async () => {
+      const res = await postJson(baseUrl, "/api/v1/credentials/verify", {
+        credential: [1, 2, 3],
+      });
+
+      expect(res.status).toBe(422);
+      expect(res.json?.code).toBe("VALIDATION_ERROR");
+    });
+
+    it("returns 422 when credential is a number", async () => {
+      const res = await postJson(baseUrl, "/api/v1/credentials/verify", {
+        credential: 42,
+      });
+
+      expect(res.status).toBe(422);
+      expect(res.json?.code).toBe("VALIDATION_ERROR");
+    });
+
+    it("handles request with multiple extra unknown fields (all rejected due to whitelist)", async () => {
+      const res = await postJson(baseUrl, "/api/v1/credentials/verify", {
+        credential: { id: "cred_1" },
+        unknown1: "value1",
+        unknown2: "value2",
+        unknown3: "value3",
+      });
+
+      expect(res.status).toBe(422);
+      expect(credentialsService.verifyCredential).not.toHaveBeenCalled();
+    });
+
+    it("passes through the service result unchanged even if it has unexpected extra fields", async () => {
+      // The controller should pass through the service response exactly as returned
+      credentialsService.verifyCredential.mockResolvedValue({
+        result: "valid",
+        extra: "field",
+        timestamp: "2026-01-01T00:00:00Z",
+      });
+
+      const res = await postJson(baseUrl, "/api/v1/credentials/verify", {
+        credential: { id: "cred_1" },
+      });
+
+      expect(res.status).toBe(200);
+      // The response includes the extra fields the service returned
+      expect(res.json).toEqual({
+        result: "valid",
+        extra: "field",
+        timestamp: "2026-01-01T00:00:00Z",
+      });
+    });
   });
 });

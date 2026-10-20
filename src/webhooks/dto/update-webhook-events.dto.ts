@@ -1,8 +1,17 @@
 import { ApiProperty } from "@nestjs/swagger";
-import { IsArray, IsIn, ArrayMinSize, ArrayMaxSize } from "class-validator";
+import { IsArray, IsIn, ArrayMinSize, ArrayMaxSize, IsInt, Min } from "class-validator";
 import { WEBHOOK_EVENT_TYPES, WebhookEventType } from "../webhook-event.types";
 
 export class UpdateWebhookEventsDto {
+  @ApiProperty({
+    description:
+      "Expected revision number for optimistic concurrency control. Must match current revision or update will fail with 409 conflict.",
+    example: 0,
+  })
+  @IsInt()
+  @Min(0)
+  expectedRevision: number;
+
   @ApiProperty({
     description: "Replacement set of event type subscriptions",
     type: [String],
