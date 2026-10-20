@@ -11,6 +11,7 @@ function makePrismaMock() {
     authSession: {
       create: jest.fn(),
       findUnique: jest.fn(),
+      findMany: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn(),
       deleteMany: jest.fn(),
@@ -496,6 +497,66 @@ describe("SessionService.deleteExpired", () => {
   });
 });
 
+describe("SessionService device metadata", () => {
+  it("derives and stores only a coarse label from allowlisted headers", async () => {
+    const prisma = makePrismaMock();
+    prisma.authSession.create.mockResolvedValue({});
+    const svc = new SessionService(prisma as never, config);
+
+    await svc.create(
+      { id: "user_1", walletAddress: "G".padEnd(56, "A"), walletHash: "h", role: "WORKER" },
+      undefined,
+      {
+        "user-agent": "Mozilla/5.0 Chrome/120.0 (Macintosh; Intel Mac OS X)",
+        "sec-ch-ua-platform": '"macOS"',
+        "sec-ch-ua-mobile": "?0",
+      },
+    );
+
+    const stored = prisma.authSession.create.mock.calls[0][0].data;
+    expect(stored.deviceLabel).toBe("Chrome / macOS / Desktop");
+    expect(JSON.stringify(stored)).not.toContain("Mozilla");
+    expect(stored.firstSeenAt).toBeInstanceOf(Date);
+    expect(stored.lastSeenAt).toBeInstanceOf(Date);
+  });
+
+  it("uses a safe bounded label for malformed or oversized headers", async () => {
+    const prisma = makePrismaMock();
+    prisma.authSession.create.mockResolvedValue({});
+    const svc = new SessionService(prisma as never, config);
+
+    await svc.create(
+      { id: "user_1", walletAddress: "G".padEnd(56, "A"), walletHash: "h", role: "WORKER" },
+      undefined,
+      { "user-agent": ["<script>".repeat(200), "ignored"] },
+    );
+
+    const label = prisma.authSession.create.mock.calls[0][0].data.deviceLabel;
+    expect(label.length).toBeLessThanOrEqual(80);
+    expect(label).not.toContain("<");
+    expect(label).toBe("Browser / Unknown platform / Desktop");
+  });
+
+  it("lists and renames only sessions owned by the caller", async () => {
+    const prisma = makePrismaMock();
+    prisma.authSession.findMany.mockResolvedValue([{ id: "owned", deviceLabel: "Phone" }]);
+    prisma.authSession.updateMany.mockResolvedValue({ count: 1 });
+    const svc = new SessionService(prisma as never, config);
+
+    await expect(svc.listForUser("user_1")).resolves.toEqual([{ id: "owned", deviceLabel: "Phone" }]);
+    await svc.renameForUser("user_1", "owned", "<Office>");
+    expect(prisma.authSession.updateMany).toHaveBeenCalledWith({
+      where: { id: "owned", userId: "user_1" },
+      data: { deviceLabel: "&lt;Office&gt;" },
+    });
+
+    prisma.authSession.updateMany.mockResolvedValue({ count: 0 });
+    await expect(svc.renameForUser("user_1", "other", "Home")).rejects.toThrow(
+      "does not belong to the current user",
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Concurrent revocation — simulates a race between two logout requests
 // ---------------------------------------------------------------------------
@@ -657,5 +718,76 @@ describe("SessionService expiry boundary (deterministic clock)", () => {
     expect(prisma.authSession.deleteMany).toHaveBeenCalledWith({
       where: { expiresAt: { lt: new Date("2030-06-15T12:00:00.000Z") } },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wallet binding (wallet rotation)
+// ---------------------------------------------------------------------------
+
+describe("SessionService wallet binding", () => {
+  const user = {
+    id: "user_1",
+    walletAddress: "G".padEnd(56, "A"),
+    walletHash: "sha256:wallet-a",
+    role: "WORKER",
+  };
+
+  it("records the wallet identity a session is issued to", async () => {
+    const prisma = makePrismaMock();
+    prisma.authSession.create.mockResolvedValue({});
+    const svc = new SessionService(prisma as never, config);
+
+    await svc.create(user);
+
+    expect(prisma.authSession.create.mock.calls[0][0].data.walletHash).toBe(
+      "sha256:wallet-a",
+    );
+  });
+
+  it("carries the wallet identity onto a rotated session", async () => {
+    const prisma = makePrismaMock();
+    const tx = {
+      authSession: {
+        findUnique: jest.fn().mockResolvedValue({
+          userId: "user_1",
+          revokedAt: null,
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
+        create: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    prisma.$transaction.mockImplementation((run: (client: typeof tx) => unknown) => run(tx));
+    const svc = new SessionService(prisma as never, config);
+
+    await svc.rotate("sess_1", user);
+
+    expect(tx.authSession.create.mock.calls[0][0].data.walletHash).toBe("sha256:wallet-a");
+  });
+
+  it("returns the bound wallet identity from validate", async () => {
+    const prisma = makePrismaMock();
+    prisma.authSession.findUnique.mockResolvedValue({
+      ...activeSession(),
+      walletHash: "sha256:wallet-a",
+    });
+    prisma.authSession.update.mockResolvedValue({});
+    const svc = new SessionService(prisma as never, config);
+
+    await expect(svc.validate(validToken)).resolves.toEqual({
+      sessionId: "sess_1",
+      userId: "user_1",
+      walletHash: "sha256:wallet-a",
+    });
+  });
+
+  it("returns null for a legacy session issued before binding existed", async () => {
+    const prisma = makePrismaMock();
+    prisma.authSession.findUnique.mockResolvedValue(activeSession());
+    prisma.authSession.update.mockResolvedValue({});
+    const svc = new SessionService(prisma as never, config);
+
+    await expect(svc.validate(validToken)).resolves.toMatchObject({ walletHash: null });
   });
 });

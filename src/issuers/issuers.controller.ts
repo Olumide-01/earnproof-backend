@@ -15,6 +15,7 @@ import {
   ApiResponse,
 } from "@nestjs/swagger";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
+import { AuthenticatedRoute } from "../common/decorators/authorization-policy.decorator";
 import { ApiErrorDto } from "../common/dto/api-error.dto";
 import { RequiredRole } from "../common/decorators/required-role.decorator";
 import { AuthGuard } from "../common/guards/auth.guard";
@@ -32,6 +33,7 @@ import { UpdateIssuerStatusDto } from "./dto/update-issuer-status.dto";
 import { IssuersService } from "./issuers.service";
 
 @ApiTags("issuers")
+@AuthenticatedRoute({ roles: ["ADMIN"] })
 @Controller("issuers")
 export class IssuersController {
   constructor(private readonly issuersService: IssuersService) {}
@@ -190,7 +192,10 @@ export class IssuersController {
   @ApiOperation({
     summary: "List issuers (public)",
     description:
-      "Public endpoint to list active issuers with allowlisted metadata. Non-authenticated users see public listing.",
+      "Public, cursor-paginated endpoint listing active issuers with allowlisted " +
+      "metadata, ordered deterministically by `createdAt` then `id`. Non-authenticated " +
+      "users see public listing. Pass `pageInfo.nextCursor` from a response as the next " +
+      "request's `cursor`.",
   })
   @ApiResponse({
     status: 200,
@@ -243,7 +248,10 @@ export class IssuersController {
   @ApiOperation({
     summary: "List issuers (admin)",
     description:
-      "Admin-only endpoint to list all issuers with full details and ability to filter by status/organization",
+      "Admin-only, cursor-paginated endpoint to list all issuers with full details and " +
+      "ability to filter by status/organization, ordered deterministically by " +
+      "`createdAt` then `id`. Pass `pageInfo.nextCursor` from a response as the next " +
+      "request's `cursor`.",
   })
   @ApiResponse({
     status: 200,

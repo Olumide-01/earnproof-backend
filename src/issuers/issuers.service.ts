@@ -9,7 +9,14 @@ import { Prisma, ResourceStatus } from "@prisma/client";
 import { createHash } from "crypto";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { sha256 } from "../common/crypto/hash";
+import {
+  buildPage,
+  cursorOrderBy,
+  cursorWhereFragment,
+} from "../common/pagination/keyset-paginate";
+import { PageInfo } from "../common/pagination/pagination.dto";
 import { PrismaService } from "../database/prisma.service";
+import { ConflictException as OptimisticLockConflictException } from "../common/exceptions/domain.exceptions";
 import { IssuerRegistryService } from "./issuer-registry.service";
 import { CreateIssuerDto } from "./dto/create-issuer.dto";
 import {
@@ -28,6 +35,9 @@ const VALID_TRANSITIONS: Record<ResourceStatus, ResourceStatus[]> = {
   [ResourceStatus.SUSPENDED]: [ResourceStatus.ACTIVE, ResourceStatus.REVOKED],
   [ResourceStatus.REVOKED]: [],
   [ResourceStatus.DELETED]: [],
+  // Issuers never take EXPIRED (it is an attestation-only effective status);
+  // listed here to keep the transition map total over ResourceStatus.
+  [ResourceStatus.EXPIRED]: [],
 };
 
 @Injectable()
@@ -56,6 +66,12 @@ export class IssuersService {
       );
     }
 
+    if (org.archivedAt) {
+      throw new ConflictException(
+        "Organization is archived; issuers cannot be registered",
+      );
+    }
+
     // Check if admin is organization creator (admins can manage any org, but log it)
     if (user.role !== "ADMIN" && org.createdById !== user.id) {
       throw new ForbiddenException(
@@ -74,6 +90,24 @@ export class IssuersService {
       );
     }
 
+    // An address that another issuer is rotating onto, or that an issuer used
+    // to hold, stays reserved: registering it would either collide with a
+    // rotation in flight or make historical attestations ambiguous.
+    const reserved =
+      (await this.prisma.issuerAddressRotation.findUnique({
+        where: { openTargetKey: input.stellarAddress },
+        select: { id: true },
+      })) ??
+      (await this.prisma.issuerAddressHistory.findFirst({
+        where: { stellarAddress: input.stellarAddress },
+        select: { id: true },
+      }));
+    if (reserved) {
+      throw new ConflictException(
+        "This Stellar address is reserved by an issuer address rotation",
+      );
+    }
+
     // Validate Stellar address format (basic check)
     if (!this.isValidStellarAddress(input.stellarAddress)) {
       throw new BadRequestException("Invalid Stellar public key format");
@@ -85,6 +119,7 @@ export class IssuersService {
         organizationId: input.organizationId,
         stellarAddress: input.stellarAddress,
         status: ResourceStatus.PENDING,
+        revision: 0,
         publicMetadata,
         metadataHash: Object.keys(publicMetadata).length
           ? this.hashMetadata(publicMetadata)
@@ -115,14 +150,31 @@ export class IssuersService {
     const publicMetadata = this.allowlistedMetadata(input.publicMetadata);
     const metadataHash = this.hashMetadata(publicMetadata);
 
-    const updated = await this.prisma.issuer.update({
-      where: { id: issuerId },
+    // Attempt optimistic update with revision check
+    const updated = await this.prisma.issuer.updateMany({
+      where: {
+        id: issuerId,
+        revision: input.expectedRevision,
+      },
       data: {
         metadataHash,
         publicMetadata,
         contractSyncState: "PENDING",
         contractSyncError: null,
+        revision: input.expectedRevision + 1,
       },
+    });
+
+    // If no records were updated, the revision didn't match
+    if (updated.count === 0) {
+      throw new OptimisticLockConflictException(
+        "Issuer has been modified by another request. Please refresh and retry.",
+        issuer.revision,
+      );
+    }
+
+    const result = await this.prisma.issuer.findUniqueOrThrow({
+      where: { id: issuerId },
     });
 
     // Log audit event
@@ -130,9 +182,10 @@ export class IssuersService {
       previousMetadataHash: issuer.metadataHash,
       newMetadataHash: metadataHash,
       publicMetadata,
+      revision: result.revision,
     });
 
-    return this.toResponseDto(updated);
+    return this.toResponseDto(result);
   }
 
   async updateIssuerStatus(
@@ -155,11 +208,27 @@ export class IssuersService {
       );
     }
 
+    // Re-activating an issuer vouches for new attestations, which an archived
+    // organization may not do. Suspending or revoking stays allowed, so an
+    // archived organization can still be wound down.
+    if (input.status === ResourceStatus.ACTIVE) {
+      const org = await this.prisma.organization.findUnique({
+        where: { id: issuer.organizationId },
+        select: { archivedAt: true },
+      });
+      if (org?.archivedAt) {
+        throw new ConflictException(
+          "Organization is archived; its issuers cannot be activated",
+        );
+      }
+    }
+
     const now = new Date();
     const updateData: any = {
       status: input.status,
       contractSyncState: "PENDING",
       contractSyncError: null,
+      revision: input.expectedRevision + 1,
     };
 
     // Update timestamp fields based on transition
@@ -177,9 +246,25 @@ export class IssuersService {
       updateData.revokedAt = now;
     }
 
-    const updated = await this.prisma.issuer.update({
-      where: { id: issuerId },
+    // Attempt optimistic update with revision check
+    const updated = await this.prisma.issuer.updateMany({
+      where: {
+        id: issuerId,
+        revision: input.expectedRevision,
+      },
       data: updateData,
+    });
+
+    // If no records were updated, the revision didn't match
+    if (updated.count === 0) {
+      throw new OptimisticLockConflictException(
+        "Issuer has been modified by another request. Please refresh and retry.",
+        issuer.revision,
+      );
+    }
+
+    const result = await this.prisma.issuer.findUniqueOrThrow({
+      where: { id: issuerId },
     });
 
     // Log audit event
@@ -187,9 +272,10 @@ export class IssuersService {
       previousStatus: issuer.status,
       newStatus: input.status,
       timestamp: now.toISOString(),
+      revision: result.revision,
     });
 
-    return this.toResponseDto(updated);
+    return this.toResponseDto(result);
   }
 
   async getIssuer(issuerId: string): Promise<IssuerResponseDto> {
@@ -215,14 +301,15 @@ export class IssuersService {
   async listIssuers(query: ListIssuersDto): Promise<{
     items: IssuerResponseDto[];
     total: number;
-    page: number;
     limit: number;
+    pageInfo: PageInfo;
   }> {
-    const page = query.page || 1;
     const limit = Math.min(query.limit || 20, 100);
-    const skip = (page - 1) * limit;
+    const cursorWhere = cursorWhereFragment(query.cursor, "createdAt");
 
-    const where: Prisma.IssuerWhereInput = {};
+    const where: Prisma.IssuerWhereInput = {
+      ...(cursorWhere as Prisma.IssuerWhereInput),
+    };
     if (query.status) {
       where.status = query.status;
     }
@@ -230,55 +317,57 @@ export class IssuersService {
       where.organizationId = query.organizationId;
     }
 
-    const [items, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
       this.prisma.issuer.findMany({
         where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: "desc" },
+        take: limit + 1,
+        orderBy: cursorOrderBy("createdAt"),
       }),
-      this.prisma.issuer.count({ where }),
+      this.prisma.issuer.count({ where: { status: where.status, organizationId: where.organizationId } }),
     ]);
+    const { data, pageInfo } = buildPage(rows, limit, "createdAt");
 
     return {
-      items: items.map((issuer) => this.toResponseDto(issuer)),
+      items: data.map((issuer) => this.toResponseDto(issuer)),
       total,
-      page,
       limit,
+      pageInfo,
     };
   }
 
   async listIssuersPublic(query: ListIssuersDto): Promise<{
     items: IssuerPublicResponseDto[];
     total: number;
-    page: number;
     limit: number;
+    pageInfo: PageInfo;
   }> {
-    const page = query.page || 1;
     const limit = Math.min(query.limit || 20, 100);
-    const skip = (page - 1) * limit;
+    const cursorWhere = cursorWhereFragment(query.cursor, "createdAt");
 
     // Public endpoint only shows active/trusted issuers
     const where: Prisma.IssuerWhereInput = {
       status: ResourceStatus.ACTIVE,
+      ...(cursorWhere as Prisma.IssuerWhereInput),
     };
 
     if (query.organizationId) {
       where.organizationId = query.organizationId;
     }
 
-    const [items, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
       this.prisma.issuer.findMany({
         where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: "desc" },
+        take: limit + 1,
+        orderBy: cursorOrderBy("createdAt"),
       }),
-      this.prisma.issuer.count({ where }),
+      this.prisma.issuer.count({
+        where: { status: ResourceStatus.ACTIVE, organizationId: where.organizationId },
+      }),
     ]);
+    const { data, pageInfo } = buildPage(rows, limit, "createdAt");
 
     return {
-      items: items.map((issuer) => {
+      items: data.map((issuer) => {
         const publicMetadata = this.allowlistedMetadata(issuer.publicMetadata);
 
         return {
@@ -290,8 +379,8 @@ export class IssuersService {
         };
       }),
       total,
-      page,
       limit,
+      pageInfo,
     };
   }
 
@@ -411,6 +500,7 @@ export class IssuersService {
       organizationId: issuer.organizationId,
       stellarAddress: issuer.stellarAddress,
       status: issuer.status,
+      revision: issuer.revision,
       metadataHash: issuer.metadataHash,
       publicMetadata: this.allowlistedMetadata(issuer.publicMetadata),
       contractSyncState: issuer.contractSyncState,

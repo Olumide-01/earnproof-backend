@@ -1,13 +1,29 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
+import {
+  auditLogHoldExclusion,
+  holdsInEffectWhere,
+  MAX_HOLDS_IN_EFFECT,
+  type HoldCoverage,
+} from "../../audit/legal-holds/legal-hold-scope";
+import { Clock, SystemClock } from "../../common/time/clock";
 import { PrismaService } from "../../database/prisma.service";
 import {
   cutoffFor,
   DisposalMethod,
   RetentionConfigError,
+  retentionPolicyVersion,
   SWEEPABLE_CLASSES,
   SweepMode,
   type RetentionClass,
 } from "./retention-policy";
+import {
+  boundOrganizationCounts,
+  compareWithPlan,
+  DEFAULT_MAX_PLAN_AGE_MS,
+  type CategoryImpact,
+  type PlanComparison,
+  type RetentionImpactReport,
+} from "./retention-report";
 
 /**
  * Bounded, resumable cleanup of expired operational records.
@@ -27,6 +43,19 @@ import {
  * next scheduled tick. Multi-instance coordination requires a shared lock and is
  * called out in `docs/data-retention.md` as a deliberate limitation rather than
  * left as an assumption.
+ *
+ * **Previewable.** A dry run walks exactly the pages a real run would delete —
+ * same filter, same order, same page size, same batch cap — and writes nothing.
+ * Both modes go through `selectPage`, so under a fixed clock and unchanged data
+ * they select the same rows by construction, not by two query builders
+ * happening to agree.
+ *
+ * **Held.** Audit records covered by a legal hold in effect at the evaluation
+ * instant are excluded from both the selection and the delete statement (#311).
+ * Holds are re-read before every select and again before every delete, so a
+ * hold committed mid-sweep protects the next statement. If the holds cannot be
+ * read, or more than {@link MAX_HOLDS_IN_EFFECT} are in effect, audit cleanup
+ * fails closed for that run instead of deleting with an incomplete hold list.
  */
 
 /** Rows removed per statement. Small enough to keep lock duration short. */
@@ -62,6 +91,13 @@ export interface RetentionRunResult {
   totalAffected: number;
   /** True when another run was already in progress and this one yielded. */
   skipped: boolean;
+  /**
+   * Impact report: policy version, cutoffs, and bounded per-organization counts
+   * by category. Absent only on a skipped run, which evaluated nothing.
+   */
+  report?: RetentionImpactReport;
+  /** Present when the run executed against a dry-run plan. */
+  planComparison?: PlanComparison;
 }
 
 /** Options for a single run. */
@@ -77,6 +113,33 @@ export interface RetentionRunOptions {
   only?: readonly string[];
   /** Injected clock, so cutoff boundaries can be pinned in tests. */
   now?: Date;
+  /**
+   * A recent dry-run report to execute against.
+   *
+   * The run reuses the plan's evaluation instant and categories, so it selects
+   * the rows that were reviewed rather than whatever a later "now" makes
+   * eligible, and the result carries a {@link PlanComparison}. A plan that is
+   * not a dry run, was made under a different policy version, or is older than
+   * {@link maxPlanAgeMs} is refused: executing it would delete on the strength
+   * of a review that no longer describes the policy or the data.
+   */
+  plan?: RetentionImpactReport;
+  /** Maximum plan age accepted with {@link plan}. */
+  maxPlanAgeMs?: number;
+}
+
+/** Raised when a supplied dry-run plan cannot be executed. */
+export class RetentionPlanError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RetentionPlanError";
+  }
+}
+
+/** One selected row: its id and, where the model is tenant-scoped, its org. */
+interface SelectedRow {
+  id: string;
+  organizationId: string | null;
 }
 
 @Injectable()
@@ -92,7 +155,20 @@ export class RetentionCleanupService {
    */
   private running = false;
 
-  constructor(private readonly prisma: PrismaService) {}
+  /** The most recent dry-run report, kept so an execution can be compared to it. */
+  private lastPlan: RetentionImpactReport | undefined;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    // Not provided by JobsModule; defaults to the system clock exactly as
+    // SessionService does. Tests pass a FixedClock (test/time/fixed-clock.ts).
+    @Optional() private readonly clock: Clock = new SystemClock(),
+  ) {}
+
+  /** The most recent dry-run report produced by this instance, if any. */
+  get latestPlan(): RetentionImpactReport | undefined {
+    return this.lastPlan;
+  }
 
   /** True while a run is in progress. */
   get isRunning(): boolean {
@@ -118,16 +194,30 @@ export class RetentionCleanupService {
     this.running = true;
 
     try {
-      const now = options.now ?? new Date();
-      const selected = this.selectClasses(options.only);
+      const dryRun = options.dryRun ?? false;
+      const policyVersion = retentionPolicyVersion();
+
+      if (options.plan) {
+        this.assertExecutablePlan(options, policyVersion);
+      }
+
+      const now =
+        options.now ??
+        (options.plan ? new Date(options.plan.evaluatedAt) : this.clock.now());
+      const selected = this.selectClasses(
+        options.only ?? options.plan?.categories.map((c) => c.category),
+      );
       const results: ClassSweepResult[] = [];
+      const categories: CategoryImpact[] = [];
 
       for (const entry of selected) {
         // One class failing must not abandon the rest. A misconfigured
         // duration on webhook deliveries should not stop challenges from
         // being swept.
         try {
-          results.push(await this.sweepClass(entry, now, options.dryRun ?? false));
+          const outcome = await this.sweepClass(entry, now, dryRun);
+          results.push(outcome.result);
+          categories.push(outcome.impact);
         } catch (error) {
           this.logger.error(
             `Retention sweep failed for ${entry.key}: ${describe(error)}`,
@@ -137,8 +227,9 @@ export class RetentionCleanupService {
             affected: 0,
             batches: 0,
             truncated: false,
-            dryRun: options.dryRun ?? false,
+            dryRun,
           });
+          categories.push(failedImpact(entry, now));
         }
       }
 
@@ -147,87 +238,208 @@ export class RetentionCleanupService {
         0,
       );
 
+      const report: RetentionImpactReport = {
+        mode: dryRun ? "dry_run" : "execute",
+        policyVersion,
+        evaluatedAt: now.toISOString(),
+        categories,
+        totals: {
+          selected: categories.reduce((sum, c) => sum + c.selected, 0),
+          affected: categories.reduce((sum, c) => sum + c.affected, 0),
+        },
+      };
+
+      if (dryRun) this.lastPlan = report;
+
       // Counts only. What was deleted is never logged.
       this.logger.log(
-        `Retention cleanup ${options.dryRun ? "(dry run) " : ""}` +
-          `affected ${totalAffected} record(s) across ${results.length} class(es)`,
+        `Retention cleanup ${dryRun ? "(dry run) " : ""}` +
+          `affected ${totalAffected} record(s) across ${results.length} class(es) ` +
+          `[policy ${policyVersion}, evaluated at ${report.evaluatedAt}]`,
       );
 
-      return { results, totalAffected, skipped: false };
+      const planComparison = options.plan
+        ? compareWithPlan(options.plan, report, {
+            maxPlanAgeMs: options.maxPlanAgeMs,
+          })
+        : undefined;
+
+      return {
+        results,
+        totalAffected,
+        skipped: false,
+        report,
+        ...(planComparison ? { planComparison } : {}),
+      };
     } finally {
       this.running = false;
     }
   }
 
   /**
+   * Refuses a plan that would make an execution delete on the strength of a
+   * review that no longer applies. Checked before anything is selected.
+   */
+  private assertExecutablePlan(
+    options: RetentionRunOptions,
+    policyVersion: string,
+  ): void {
+    const plan = options.plan as RetentionImpactReport;
+
+    if (options.dryRun) {
+      throw new RetentionPlanError("A plan can only be supplied to an execution.");
+    }
+    if (plan.mode !== "dry_run") {
+      throw new RetentionPlanError("The supplied plan is not a dry-run report.");
+    }
+    if (plan.policyVersion !== policyVersion) {
+      throw new RetentionPlanError(
+        `The plan was made under policy ${plan.policyVersion}, but ` +
+          `${policyVersion} is in force. Run a new dry run.`,
+      );
+    }
+
+    const planTime = Date.parse(plan.evaluatedAt);
+    const age = this.clock.nowMs() - planTime;
+    const maxAge = options.maxPlanAgeMs ?? DEFAULT_MAX_PLAN_AGE_MS;
+
+    if (!Number.isFinite(planTime) || age < 0 || age > maxAge) {
+      throw new RetentionPlanError(
+        "The plan is stale or from the future. Run a new dry run.",
+      );
+    }
+  }
+
+  /**
    * Sweeps one class in bounded batches until it is drained or capped.
+   *
+   * A dry run pages through the same selection a real run would delete, using
+   * `skip` where the real run relies on the previous page having been removed.
+   * It never calls a write method.
    */
   private async sweepClass(
     entry: RetentionClass,
     now: Date,
     dryRun: boolean,
-  ): Promise<ClassSweepResult> {
+  ): Promise<{ result: ClassSweepResult; impact: CategoryImpact }> {
     this.assertSweepable(entry);
 
     const cutoff = cutoffFor(entry, now);
     const delegate = this.delegateFor(entry);
+    const tally = new Map<string | null, number>();
 
-    if (dryRun) {
-      // Counting is bounded by the same index the deletion would use, so a dry
-      // run costs roughly one batch's worth of work regardless of backlog size.
-      const eligible = await delegate.count({
-        where: this.eligibilityFilter(entry, cutoff),
-      });
-
-      return {
-        key: entry.key,
-        affected: eligible,
-        batches: 0,
-        truncated: false,
-        dryRun: true,
-      };
-    }
-
+    let selected = 0;
     let affected = 0;
     let batches = 0;
+    let drained = false;
 
     while (batches < MAX_BATCHES_PER_RUN) {
       // Select ids first, then act on exactly those. Selecting by id keeps each
       // write statement small and makes the operation safe to interrupt: a
       // crash between selection and deletion loses nothing, because the same
       // rows remain eligible next run.
-      const candidates: Array<{ id: string }> = await delegate.findMany({
-        where: this.eligibilityFilter(entry, cutoff),
-        select: { id: true },
-        orderBy: { [entry.cutoffColumn]: "asc" },
-        take: BATCH_SIZE,
-      });
+      const page = await this.selectPage(
+        entry,
+        delegate,
+        cutoff,
+        dryRun ? selected : 0,
+        await this.holdExclusion(entry, now),
+      );
 
-      if (candidates.length === 0) {
-        return { key: entry.key, affected, batches, truncated: false, dryRun: false };
+      if (page.length === 0) {
+        drained = true;
+        break;
       }
 
-      const ids = candidates.map((row) => row.id);
+      if (!dryRun) {
+        const ids = page.map((row) => row.id);
+        // The exclusion is applied again so a hold that committed after the
+        // select still protects its records from this statement.
+        const result = await delegate.deleteMany({
+          where: { id: { in: ids }, ...(await this.holdExclusion(entry, now)) },
+        });
+        affected += result.count;
+      }
 
-      const result = await delegate.deleteMany({ where: { id: { in: ids } } });
-
-      affected += result.count;
+      // Tallied after a successful delete, so a failed batch is not reported
+      // as selected work that happened.
+      for (const row of page) {
+        tally.set(row.organizationId, (tally.get(row.organizationId) ?? 0) + 1);
+      }
+      selected += page.length;
+      // In a dry run, the batch the real run would have executed.
       batches += 1;
 
       // A short batch means the eligible set is drained.
-      if (candidates.length < BATCH_SIZE) {
-        return { key: entry.key, affected, batches, truncated: false, dryRun: false };
+      if (page.length < BATCH_SIZE) {
+        drained = true;
+        break;
       }
     }
 
-    // The cap was reached with rows still eligible. Reported, never silent:
-    // a truncated sweep that looked complete would let a backlog grow unseen.
-    this.logger.warn(
-      `Retention sweep for ${entry.key} hit the ${MAX_BATCHES_PER_RUN}-batch cap ` +
-        `after ${affected} record(s); remaining rows will be swept next run`,
-    );
+    // When the cap is reached exactly on a full page, a real run cannot know
+    // whether rows remain without another query; neither can the preview, so
+    // both report truncation identically.
+    const truncated = !drained;
 
-    return { key: entry.key, affected, batches, truncated: true, dryRun: false };
+    if (truncated && !dryRun) {
+      // The cap was reached with rows still eligible. Reported, never silent:
+      // a truncated sweep that looked complete would let a backlog grow unseen.
+      this.logger.warn(
+        `Retention sweep for ${entry.key} hit the ${MAX_BATCHES_PER_RUN}-batch cap ` +
+          `after ${affected} record(s); remaining rows will be swept next run`,
+      );
+    }
+
+    return {
+      result: {
+        key: entry.key,
+        // In a dry run, "affected" has always meant "would be affected".
+        affected: dryRun ? selected : affected,
+        batches: dryRun ? 0 : batches,
+        truncated,
+        dryRun,
+      },
+      impact: {
+        category: entry.key,
+        cutoff: cutoff.toISOString(),
+        cutoffColumn: entry.cutoffColumn,
+        selected,
+        affected: dryRun ? 0 : affected,
+        truncated,
+        failed: false,
+        ...boundOrganizationCounts(tally),
+      },
+    };
+  }
+
+  /**
+   * The single selection query shared by dry runs and executions.
+   *
+   * Ordered by the cutoff column with `id` as a tiebreaker, so the order is
+   * total: without it, rows sharing a timestamp could be paged differently by a
+   * dry run (which skips) and an execution (which deletes), and the two would
+   * no longer be guaranteed to select the same rows.
+   */
+  private async selectPage(
+    entry: RetentionClass,
+    delegate: PrismaDelegate,
+    cutoff: Date,
+    skip: number,
+    exclusion: Record<string, unknown> = {},
+  ): Promise<SelectedRow[]> {
+    const rows = await delegate.findMany({
+      where: { ...this.eligibilityFilter(entry, cutoff), ...exclusion },
+      select: selectionFor(entry),
+      orderBy: [{ [entry.cutoffColumn]: "asc" }, { id: "asc" }],
+      take: BATCH_SIZE,
+      ...(skip > 0 ? { skip } : {}),
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      organizationId: organizationOf(entry, row),
+    }));
   }
 
   /**
@@ -262,6 +474,32 @@ export class RetentionCleanupService {
     }
 
     return base;
+  }
+
+  /**
+   * Where-clause fragment excluding legally held records. Only audit logs can
+   * be held; every other class gets an empty fragment and an unchanged query.
+   */
+  private async holdExclusion(
+    entry: RetentionClass,
+    now: Date,
+  ): Promise<Record<string, unknown>> {
+    if (entry.key !== "audit_logs") return {};
+
+    const holds: HoldCoverage[] = await this.prisma.auditLegalHold.findMany({
+      where: holdsInEffectWhere(now),
+      select: { scope: true, organizationId: true, rangeStart: true, rangeEnd: true },
+      take: MAX_HOLDS_IN_EFFECT + 1,
+    });
+
+    if (holds.length > MAX_HOLDS_IN_EFFECT) {
+      throw new RetentionConfigError(
+        `More than ${MAX_HOLDS_IN_EFFECT} legal holds are in effect; audit cleanup ` +
+          "is skipped rather than run with a truncated hold list.",
+      );
+    }
+
+    return auditLogHoldExclusion(holds);
   }
 
   /**
@@ -327,6 +565,8 @@ export class RetentionCleanupService {
       audit_logs: this.prisma.auditLog as unknown as PrismaDelegate,
       failed_anchoring_intents: this.prisma
         .anchoringIntent as unknown as PrismaDelegate,
+      idempotency_records: this.prisma
+        .idempotencyRecord as unknown as PrismaDelegate,
     };
 
     const delegate = delegates[entry.key];
@@ -339,18 +579,71 @@ export class RetentionCleanupService {
   }
 }
 
+/** Row shape returned by a selection: id plus any tenant attribution. */
+interface SelectedRecord {
+  id: string;
+  webhook?: { organizationId?: string | null } | null;
+}
+
 /** The subset of a Prisma model delegate the sweep uses. */
 interface PrismaDelegate {
-  count(args: { where: Record<string, unknown> }): Promise<number>;
   findMany(args: {
     where: Record<string, unknown>;
-    select: { id: true };
-    orderBy: Record<string, "asc" | "desc">;
+    select: Record<string, unknown>;
+    orderBy: Array<Record<string, "asc" | "desc">>;
     take: number;
-  }): Promise<Array<{ id: string }>>;
+    skip?: number;
+  }): Promise<SelectedRecord[]>;
   deleteMany(args: {
     where: Record<string, unknown>;
   }): Promise<{ count: number }>;
+}
+
+/**
+ * Columns a selection reads: the id and, for tenant-scoped models, the owning
+ * organization. Nothing else — record content never leaves the database.
+ *
+ * Webhook deliveries are the only swept model with an organization; the others
+ * (challenges, sessions, verification events, audit logs, anchoring intents)
+ * carry no tenant column and are reported under a `null` organization.
+ */
+function selectionFor(entry: RetentionClass): Record<string, unknown> {
+  if (entry.key === "webhook_deliveries") {
+    return { id: true, webhook: { select: { organizationId: true } } };
+  }
+  return { id: true };
+}
+
+function organizationOf(
+  entry: RetentionClass,
+  row: SelectedRecord,
+): string | null {
+  if (entry.key === "webhook_deliveries") {
+    return row.webhook?.organizationId ?? null;
+  }
+  return null;
+}
+
+/** Impact entry for a class that could not be evaluated. */
+function failedImpact(entry: RetentionClass, now: Date): CategoryImpact {
+  let cutoff = "";
+  try {
+    cutoff = cutoffFor(entry, now).toISOString();
+  } catch {
+    // The cutoff itself is what failed (an unusable override); left empty.
+  }
+
+  return {
+    category: entry.key,
+    cutoff,
+    cutoffColumn: entry.cutoffColumn,
+    selected: 0,
+    affected: 0,
+    truncated: false,
+    failed: true,
+    organizations: [],
+    otherOrganizations: { buckets: 0, count: 0 },
+  };
 }
 
 /** Error description safe for an operational log. */

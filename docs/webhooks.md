@@ -432,3 +432,5 @@ to every local user in the process list.
   sending side.
 - [Versioning](versioning.md) — how `specVersion` and event types evolve.
 - [Architecture](architecture.md) — where webhooks sit in the system.
+- [Webhook TLS posture](webhook-tls-posture.md) — scheduled certificate and
+  protocol probes of webhook endpoints.

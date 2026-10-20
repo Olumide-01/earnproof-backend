@@ -1,3 +1,6 @@
+import { canonicalize } from "../../common/crypto/canonicalize";
+import { sha256 } from "../../common/crypto/hash";
+
 /**
  * Retention classes and their durations.
  *
@@ -170,6 +173,39 @@ export const RETENTION_CLASSES: readonly RetentionClass[] = [
     disposal: DisposalMethod.DELETE,
     sweep: SweepMode.AUTOMATED,
   },
+  {
+    key: "idempotency_records",
+    model: "IdempotencyRecord",
+    purpose:
+      "Request deduplication and response replay for idempotent mutations. " +
+      "Cached responses prevent duplicate mutations when client retries are lost. " +
+      "Expired records have no value and are deleted.",
+    owner: "Platform engineering",
+    defaultDays: 1,
+    envVar: "RETENTION_IDEMPOTENCY_RECORD_DAYS",
+    cutoffColumn: "expiresAt",
+    backingIndex: "@@index([organizationId, expiresAt])",
+    disposal: DisposalMethod.DELETE,
+    sweep: SweepMode.AUTOMATED,
+  },
+
+  {
+    key: "compatibility_assessments",
+    model: "ContractCompatibilityAssessment",
+    purpose:
+      "Immutable compatibility findings bound to a proof version. Retained as " +
+      "evidence that governance approval was preceded by a documented assessment.",
+    owner: "Security",
+    defaultDays: MAXIMUM_RETENTION_DAYS,
+    envVar: "RETENTION_COMPAT_ASSESSMENT_DAYS",
+    cutoffColumn: "createdAt",
+    backingIndex: "@@index([proofId])",
+    disposal: DisposalMethod.ANONYMISE,
+    sweep: SweepMode.PRESERVED,
+    preservationReason:
+      "A completed assessment is governance evidence. Deleting it would remove " +
+      "the audit trail showing that blocking findings were reviewed before approval.",
+  },
 
   // ─── Preserved: never swept by the automated job ─────────────────────────
   {
@@ -219,6 +255,26 @@ export const RETENTION_CLASSES: readonly RetentionClass[] = [
       "Confirmed intents carry the transaction hash linking a proof to the " +
       "ledger. Pending intents are unfinished work. Deleting either loses the " +
       "record of what was anchored, or the work itself.",
+  },
+  {
+    key: "archived_organizations",
+    model: "Organization",
+    purpose:
+      "Archived tenant organizations. The period is the minimum time an " +
+      "organization stays archived, and therefore restorable, before the " +
+      "deletion workflow will accept it.",
+    owner: "Security",
+    defaultDays: 30,
+    envVar: "RETENTION_ORGANIZATION_ARCHIVE_DAYS",
+    cutoffColumn: "archivedAt",
+    backingIndex: "@@index([archivedAt])",
+    disposal: DisposalMethod.ANONYMISE,
+    sweep: SweepMode.PRESERVED,
+    preservationReason:
+      "Deleting an organization revokes its credentials and anonymises its " +
+      "profile, and must first pass the dependency, legal-hold and " +
+      "minimum-archive checks. That is an explicit, audited administrator " +
+      "action, never a scheduled sweep.",
   },
 ];
 
@@ -275,6 +331,56 @@ export function resolveRetentionDays(
   }
 
   return parsed;
+}
+
+/**
+ * Schema of the policy fingerprint below. Bump it if the fingerprint's inputs
+ * change shape, so old and new versions can never collide.
+ */
+export const RETENTION_POLICY_SCHEMA_VERSION = 1;
+
+/**
+ * Stable version identifier for the retention policy in force.
+ *
+ * Derived rather than hand-maintained: it fingerprints every sweepable class's
+ * definition together with its resolved duration, so changing a class, adding
+ * one, or overriding a duration through the environment all produce a new
+ * version. A hand-bumped constant would silently go stale the first time an
+ * operator tightened a duration without a deploy. Recorded on every run so an
+ * execution can be matched to the dry-run plan that was reviewed.
+ */
+export function retentionPolicyVersion(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const fingerprint = SWEEPABLE_CLASSES.map((entry) => ({
+    key: entry.key,
+    model: entry.model,
+    cutoffColumn: entry.cutoffColumn,
+    disposal: entry.disposal,
+    sweep: entry.sweep,
+    days: resolvedDaysOrInvalid(entry, env),
+  }));
+
+  return `v${RETENTION_POLICY_SCHEMA_VERSION}-${sha256(
+    canonicalize(fingerprint),
+  ).slice(0, 16)}`;
+}
+
+/**
+ * A misconfigured class must not stop the version being computed: the run
+ * isolates that class's failure, and the report still needs a version. The
+ * marker keeps a broken override distinguishable from every valid one.
+ */
+function resolvedDaysOrInvalid(
+  entry: RetentionClass,
+  env: NodeJS.ProcessEnv,
+): number | "invalid" {
+  try {
+    return resolveRetentionDays(entry, env);
+  } catch (error) {
+    if (error instanceof RetentionConfigError) return "invalid";
+    throw error;
+  }
 }
 
 /**

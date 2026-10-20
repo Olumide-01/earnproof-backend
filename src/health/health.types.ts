@@ -9,6 +9,8 @@
  * - Diagnostics — "what exactly is wrong?"  Authorized callers only.
  */
 
+import type { ClockSkewSnapshot } from "./clock-skew-monitor.service";
+
 /**
  * Stable, safe status codes.
  *
@@ -66,6 +68,30 @@ export interface DependencyResult {
   cached?: boolean;
   /** Age of a cached result, in milliseconds. */
   ageMs?: number;
+  /**
+   * Per-circuit state, present only on the circuit-breaker dependency.
+   *
+   * Deliberately typed as counts-and-state records: it carries circuit names
+   * and numbers, never a transaction payload, an address, or an error body, so
+   * it is safe to render in the authorized diagnostics response.
+   */
+  circuits?: CircuitDiagnostic[];
+  /**
+   * Clock skew detail, present only on the `clock_skew` diagnostics entry.
+   * Numbers, source names and stable codes only — see clock-skew-monitor.
+   */
+  clockSkew?: ClockSkewSnapshot;
+}
+
+/** Privacy-safe view of one circuit for the diagnostics endpoint. */
+export interface CircuitDiagnostic {
+  name: string;
+  state: "closed" | "open" | "half_open";
+  consecutiveFailures: number;
+  probeSuccesses: number;
+  probesInFlight: number;
+  openCount: number;
+  cooldownRemainingMs: number;
 }
 
 /** Aggregate readiness verdict. */

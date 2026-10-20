@@ -145,4 +145,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run prisma:generate
+      # Reset database and apply migrations before e2e tests.
+      # The e2e test harness relies on a clean template database built during
+      # global setup, so we must ensure all migrations are applied before tests run.
+      - run: npm run db:reset
       - run: npm run test:e2e

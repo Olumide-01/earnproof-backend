@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { ProofType, VerificationResult } from "@prisma/client";
+import { ProofType, RevocationReasonCode, VerificationResult } from "@prisma/client";
 import { SignedCredentialDto } from "./proof-created.dto";
 
 export class ContractStatusDto {
@@ -53,6 +53,15 @@ export class ProofSummaryDto {
     example: null,
   })
   revokedAt!: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      "Closed, public-safe reason the proof was revoked, or null. Never the private operator note.",
+    enum: RevocationReasonCode,
+    nullable: true,
+    example: null,
+  })
+  revocationReasonCode!: RevocationReasonCode | null;
 
   @ApiProperty({ type: () => ContractStatusDto })
   contractStatus!: ContractStatusDto;

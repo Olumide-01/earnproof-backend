@@ -1,7 +1,4 @@
--- migration-safety: compatibility=additive
--- migration-safety: rollback=drop-table-ProofDispute,drop-table-DisputeEvidenceManifest
-
--- CreateEnum
+﻿-- CreateEnum
 CREATE TYPE "DisputeStatus" AS ENUM ('OPEN', 'UNDER_REVIEW', 'RESOLVED', 'REJECTED');
 CREATE TYPE "DisputeEvidenceRole" AS ENUM ('PROOF_OWNER', 'ISSUER', 'ADMIN', 'VERIFIER');
 
@@ -33,11 +30,10 @@ CREATE TABLE "DisputeEvidenceManifest" (
   CONSTRAINT "DisputeEvidenceManifest_pkey" PRIMARY KEY ("id")
 );
 
-CREATE INDEX "ProofDispute_proofId_idx"  ON "ProofDispute"("proofId");
-CREATE INDEX "ProofDispute_status_idx"   ON "ProofDispute"("status");
+CREATE INDEX "ProofDispute_proofId_idx" ON "ProofDispute"("proofId");
+CREATE INDEX "ProofDispute_status_idx"  ON "ProofDispute"("status");
 CREATE UNIQUE INDEX "DisputeEvidenceManifest_manifestHash_key" ON "DisputeEvidenceManifest"("manifestHash");
-CREATE INDEX "DisputeEvidenceManifest_disputeId_idx"     ON "DisputeEvidenceManifest"("disputeId");
-CREATE INDEX "DisputeEvidenceManifest_manifestHash_idx"  ON "DisputeEvidenceManifest"("manifestHash");
+CREATE INDEX "DisputeEvidenceManifest_disputeId_idx"    ON "DisputeEvidenceManifest"("disputeId");
 CREATE INDEX "DisputeEvidenceManifest_submitterRole_idx" ON "DisputeEvidenceManifest"("submitterRole");
 
 ALTER TABLE "ProofDispute" ADD CONSTRAINT "ProofDispute_proofId_fkey"

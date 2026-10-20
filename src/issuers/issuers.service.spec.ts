@@ -35,9 +35,14 @@ describe("IssuersService", () => {
     slug: "test-org",
     website: "https://example.com",
     status: ResourceStatus.PENDING,
+    revision: 0,
     createdById: mockUser.id,
     createdAt: new Date("2026-01-01"),
     updatedAt: new Date("2026-01-01"),
+    archivedAt: null,
+    legalHoldAt: null,
+    legalHoldReference: null,
+    deletedAt: null,
   };
 
   const mockIssuer = {
@@ -52,6 +57,7 @@ describe("IssuersService", () => {
     contractTransactionHash: null,
     contractSyncedAt: null,
     contractSyncError: null,
+    revision: 0,
     verifiedAt: null,
     suspendedAt: null,
     revokedAt: null,
@@ -72,9 +78,17 @@ describe("IssuersService", () => {
             issuer: {
               create: jest.fn(),
               update: jest.fn(),
+              updateMany: jest.fn().mockResolvedValue({ count: 1 }),
               findUnique: jest.fn(),
+              findUniqueOrThrow: jest.fn(),
               findMany: jest.fn(),
               count: jest.fn(),
+            },
+            issuerAddressRotation: {
+              findUnique: jest.fn().mockResolvedValue(null),
+            },
+            issuerAddressHistory: {
+              findFirst: jest.fn().mockResolvedValue(null),
             },
             auditLog: {
               create: jest.fn(),
@@ -116,6 +130,27 @@ describe("IssuersService", () => {
       expect(result.id).toBe(mockIssuer.id);
       expect(result.status).toBe(ResourceStatus.PENDING);
       expect(prisma.issuer.create).toHaveBeenCalled();
+    });
+
+    it.each([
+      ["the target of an open address rotation", "issuerAddressRotation", "findUnique"],
+      ["an address an issuer used to hold", "issuerAddressHistory", "findFirst"],
+    ] as const)("should reject registering %s", async (_label, table, method) => {
+      jest
+        .spyOn(prisma.organization, "findUnique")
+        .mockResolvedValue(mockOrganization);
+      jest.spyOn(prisma.issuer, "findUnique").mockResolvedValue(null);
+      jest
+        .spyOn(prisma[table] as never, method as never)
+        .mockResolvedValue({ id: "reserved" } as never);
+
+      await expect(
+        service.createIssuer(mockUser, {
+          organizationId: "org-1",
+          stellarAddress: mockIssuer.stellarAddress,
+        }),
+      ).rejects.toThrow("reserved by an issuer address rotation");
+      expect(prisma.issuer.create).not.toHaveBeenCalled();
     });
 
     it("should reject when user is not admin", async () => {
@@ -180,10 +215,11 @@ describe("IssuersService", () => {
 
   describe("updateIssuerStatus", () => {
     it("should transition from PENDING to ACTIVE", async () => {
-      const input = { status: ResourceStatus.ACTIVE };
+      const input = { status: ResourceStatus.ACTIVE, expectedRevision: 0 };
 
       jest.spyOn(prisma.issuer, "findUnique").mockResolvedValue(mockIssuer);
-      jest.spyOn(prisma.issuer, "update").mockResolvedValue({
+      jest.spyOn(prisma.issuer, "updateMany").mockResolvedValue({ count: 1 });
+      jest.spyOn(prisma.issuer, "findUniqueOrThrow").mockResolvedValue({
         ...mockIssuer,
         status: ResourceStatus.ACTIVE,
         verifiedAt: new Date(),
@@ -197,11 +233,11 @@ describe("IssuersService", () => {
       );
 
       expect(result.status).toBe(ResourceStatus.ACTIVE);
-      expect(prisma.issuer.update).toHaveBeenCalled();
+      expect(prisma.issuer.updateMany).toHaveBeenCalled();
     });
 
     it("should reject invalid status transition", async () => {
-      const input = { status: ResourceStatus.PENDING };
+      const input = { status: ResourceStatus.PENDING, expectedRevision: 0 };
       const activeIssuer = { ...mockIssuer, status: ResourceStatus.ACTIVE };
 
       jest.spyOn(prisma.issuer, "findUnique").mockResolvedValue(activeIssuer);
@@ -212,7 +248,7 @@ describe("IssuersService", () => {
     });
 
     it("should reject when user is not admin", async () => {
-      const input = { status: ResourceStatus.ACTIVE };
+      const input = { status: ResourceStatus.ACTIVE, expectedRevision: 0 };
 
       await expect(
         service.updateIssuerStatus(mockNonAdminUser, "issuer-1", input),
@@ -220,10 +256,11 @@ describe("IssuersService", () => {
     });
 
     it("should set verifiedAt when transitioning to ACTIVE", async () => {
-      const input = { status: ResourceStatus.ACTIVE };
+      const input = { status: ResourceStatus.ACTIVE, expectedRevision: 0 };
 
       jest.spyOn(prisma.issuer, "findUnique").mockResolvedValue(mockIssuer);
-      jest.spyOn(prisma.issuer, "update").mockResolvedValue({
+      jest.spyOn(prisma.issuer, "updateMany").mockResolvedValue({ count: 1 });
+      jest.spyOn(prisma.issuer, "findUniqueOrThrow").mockResolvedValue({
         ...mockIssuer,
         status: ResourceStatus.ACTIVE,
         verifiedAt: new Date(),
@@ -232,8 +269,8 @@ describe("IssuersService", () => {
 
       await service.updateIssuerStatus(mockUser, "issuer-1", input);
 
-      expect(prisma.issuer.update).toHaveBeenCalledWith({
-        where: { id: "issuer-1" },
+      expect(prisma.issuer.updateMany).toHaveBeenCalledWith({
+        where: { id: "issuer-1", revision: 0 },
         data: expect.objectContaining({
           status: ResourceStatus.ACTIVE,
           verifiedAt: expect.any(Date),
@@ -242,11 +279,12 @@ describe("IssuersService", () => {
     });
 
     it("should set suspendedAt when transitioning to SUSPENDED", async () => {
-      const input = { status: ResourceStatus.SUSPENDED };
+      const input = { status: ResourceStatus.SUSPENDED, expectedRevision: 0 };
       const activeIssuer = { ...mockIssuer, status: ResourceStatus.ACTIVE };
 
       jest.spyOn(prisma.issuer, "findUnique").mockResolvedValue(activeIssuer);
-      jest.spyOn(prisma.issuer, "update").mockResolvedValue({
+      jest.spyOn(prisma.issuer, "updateMany").mockResolvedValue({ count: 1 });
+      jest.spyOn(prisma.issuer, "findUniqueOrThrow").mockResolvedValue({
         ...activeIssuer,
         status: ResourceStatus.SUSPENDED,
         suspendedAt: new Date(),
@@ -255,8 +293,8 @@ describe("IssuersService", () => {
 
       await service.updateIssuerStatus(mockUser, "issuer-1", input);
 
-      expect(prisma.issuer.update).toHaveBeenCalledWith({
-        where: { id: "issuer-1" },
+      expect(prisma.issuer.updateMany).toHaveBeenCalledWith({
+        where: { id: "issuer-1", revision: 0 },
         data: expect.objectContaining({
           status: ResourceStatus.SUSPENDED,
           suspendedAt: expect.any(Date),
@@ -265,11 +303,12 @@ describe("IssuersService", () => {
     });
 
     it("should set revokedAt when transitioning to REVOKED", async () => {
-      const input = { status: ResourceStatus.REVOKED };
+      const input = { status: ResourceStatus.REVOKED, expectedRevision: 0 };
       const activeIssuer = { ...mockIssuer, status: ResourceStatus.ACTIVE };
 
       jest.spyOn(prisma.issuer, "findUnique").mockResolvedValue(activeIssuer);
-      jest.spyOn(prisma.issuer, "update").mockResolvedValue({
+      jest.spyOn(prisma.issuer, "updateMany").mockResolvedValue({ count: 1 });
+      jest.spyOn(prisma.issuer, "findUniqueOrThrow").mockResolvedValue({
         ...activeIssuer,
         status: ResourceStatus.REVOKED,
         revokedAt: new Date(),
@@ -278,8 +317,8 @@ describe("IssuersService", () => {
 
       await service.updateIssuerStatus(mockUser, "issuer-1", input);
 
-      expect(prisma.issuer.update).toHaveBeenCalledWith({
-        where: { id: "issuer-1" },
+      expect(prisma.issuer.updateMany).toHaveBeenCalledWith({
+        where: { id: "issuer-1", revision: 0 },
         data: expect.objectContaining({
           status: ResourceStatus.REVOKED,
           revokedAt: expect.any(Date),
@@ -413,23 +452,36 @@ describe("IssuersService", () => {
       expect(JSON.stringify(result)).not.toContain("internalNotes");
     });
 
-    it("should paginate results", async () => {
-      jest.spyOn(prisma.issuer, "findMany").mockResolvedValue([mockIssuer]);
+    it("returns a deterministic page with cursor-based pagination", async () => {
+      const rows = Array.from({ length: 11 }, (_, i) => ({
+        ...mockIssuer,
+        id: `issuer-${i}`,
+        createdAt: new Date(`2026-01-${String(i + 1).padStart(2, "0")}`),
+      })).reverse();
+      jest.spyOn(prisma.issuer, "findMany").mockResolvedValue(rows);
       jest.spyOn(prisma.issuer, "count").mockResolvedValue(50);
 
-      const result = await service.listIssuersPublic({
-        page: 2,
-        limit: 10,
-      });
+      const result = await service.listIssuersPublic({ limit: 10 });
 
-      expect(result.page).toBe(2);
       expect(result.limit).toBe(10);
+      expect(result.items).toHaveLength(10);
+      expect(result.pageInfo.hasMore).toBe(true);
+      expect(result.pageInfo.nextCursor).not.toBeNull();
       expect(prisma.issuer.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          skip: 10,
-          take: 10,
+          take: 11,
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         }),
       );
+    });
+
+    it("rejects an invalid cursor without querying the database", async () => {
+      const findMany = jest.spyOn(prisma.issuer, "findMany");
+
+      await expect(
+        service.listIssuersPublic({ cursor: "not-a-valid-cursor" }),
+      ).rejects.toThrow(BadRequestException);
+      expect(findMany).not.toHaveBeenCalled();
     });
   });
 

@@ -10,6 +10,7 @@ import { CredentialsService } from "./credentials.service";
 // ---------------------------------------------------------------------------
 
 const SIGNING_SECRET = "test-signing-secret";
+const FUTURE_EXPIRY = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
 const config = {
   getOrThrow: jest.fn((key: string) => {
@@ -39,18 +40,23 @@ function buildCredentialBody(overrides: Partial<Record<string, unknown>> = {}) {
     },
     privacy: { exactIncomeHidden: true as const, sourceTransactionsHidden: true as const },
     issuedAt: "2026-08-02T00:00:00.000Z",
-    expiresAt: "2027-09-02T00:00:00.000Z",
+    expiresAt: FUTURE_EXPIRY.toISOString(),
     ...overrides,
   };
 }
 
 /** Signs a credential body exactly as ProofsService.signCredential does. */
-function signCredential(body: Record<string, unknown>, secret = SIGNING_SECRET) {
+function signCredential(
+  body: Record<string, unknown>,
+  secret = SIGNING_SECRET,
+  keyId?: string,
+) {
   const canonicalPayload = canonicalize(body);
   return {
     ...body,
     proof: {
       type: "HMAC-SHA256",
+      ...(keyId ? { keyId } : {}),
       credentialHash: `sha256:${sha256(canonicalPayload)}`,
       signature: `hmac-sha256:${createHmac("sha256", secret)
         .update(canonicalPayload)
@@ -88,7 +94,7 @@ describe("CredentialsService.verifyCredential", () => {
 
     const prisma = mockPrismaWith({
       status: ProofStatus.ACTIVE,
-      expiresAt: new Date("2027-09-02T00:00:00.000Z"), // future
+      expiresAt: FUTURE_EXPIRY, // future
       schemaVersion: "earnproof.minimum-income.v1",
     });
 
@@ -253,7 +259,7 @@ describe("CredentialsService.verifyCredential", () => {
 
     const prisma = mockPrismaWith({
       status: ProofStatus.REVOKED,
-      expiresAt: new Date("2027-09-02T00:00:00.000Z"), // future
+      expiresAt: FUTURE_EXPIRY, // future
       schemaVersion: "earnproof.minimum-income.v1",
     });
 
@@ -303,5 +309,118 @@ describe("CredentialsService.verifyCredential", () => {
     await expect(service.verifyCredential(malformed)).rejects.toThrow(
       /malformed/,
     );
+  });
+});
+
+describe("CredentialsService.verifyCredential — key rotation", () => {
+  function rotatedConfig(overrides: Record<string, unknown> = {}) {
+    return {
+      get: jest.fn((key: string) => {
+        const values: Record<string, unknown> = {
+          "credentialSigningKeyVersions.0": "old-secret",
+          "credentialSigningKeyVersions.1": "new-secret",
+          credentialSigningKeyVersion: 1,
+          ...overrides,
+        };
+        return values[key];
+      }),
+      getOrThrow: jest.fn(),
+    };
+  }
+
+  it("verifies a credential signed with the new (active) key, addressed by its keyId", async () => {
+    const body = buildCredentialBody();
+    const signed = signCredential(body, "new-secret", "earnproof-v1");
+    const prisma = mockPrismaWith({
+      status: ProofStatus.ACTIVE,
+      expiresAt: new Date("2027-09-02T00:00:00.000Z"),
+      schemaVersion: "earnproof.minimum-income.v1",
+    });
+
+    const service = new CredentialsService(prisma as never, rotatedConfig() as never);
+    await expect(service.verifyCredential(signed)).resolves.toEqual({ result: "valid" });
+  });
+
+  it("verifies a credential signed with the old (verify-only) key, addressed by its keyId", async () => {
+    const body = buildCredentialBody();
+    const signed = signCredential(body, "old-secret", "earnproof-v0");
+    const prisma = mockPrismaWith({
+      status: ProofStatus.ACTIVE,
+      expiresAt: new Date("2027-09-02T00:00:00.000Z"),
+      schemaVersion: "earnproof.minimum-income.v1",
+    });
+
+    const service = new CredentialsService(prisma as never, rotatedConfig() as never);
+    await expect(service.verifyCredential(signed)).resolves.toEqual({ result: "valid" });
+  });
+
+  it("treats a credential with no keyId as signed by legacy version 0", async () => {
+    const body = buildCredentialBody();
+    const signed = signCredential(body, "old-secret"); // no keyId
+    const prisma = mockPrismaWith({
+      status: ProofStatus.ACTIVE,
+      expiresAt: new Date("2027-09-02T00:00:00.000Z"),
+      schemaVersion: "earnproof.minimum-income.v1",
+    });
+
+    const service = new CredentialsService(prisma as never, rotatedConfig() as never);
+    await expect(service.verifyCredential(signed)).resolves.toEqual({ result: "valid" });
+  });
+
+  it("refuses a credential addressed to a retired key that is no longer loaded", async () => {
+    const body = buildCredentialBody();
+    // Signed as if by a v0 key that has since been retired (removed from config).
+    const signed = signCredential(body, "retired-secret", "earnproof-v0");
+    const prisma = mockPrismaWith(null);
+
+    const service = new CredentialsService(
+      prisma as never,
+      rotatedConfig({ "credentialSigningKeyVersions.0": undefined }) as never,
+    );
+
+    await expect(service.verifyCredential(signed)).resolves.toEqual({
+      result: "unsupported_key",
+    });
+  });
+
+  it("refuses a credential addressed to a verify-only key past its overlap window (expired)", async () => {
+    const body = buildCredentialBody();
+    const signed = signCredential(body, "old-secret", "earnproof-v0");
+    const prisma = mockPrismaWith(null);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const service = new CredentialsService(
+      prisma as never,
+      rotatedConfig({ "credentialSigningKeyVerifyUntil.0": past }) as never,
+    );
+
+    await expect(service.verifyCredential(signed)).resolves.toEqual({
+      result: "unsupported_key",
+    });
+  });
+
+  it("refuses a credential addressed to an unknown key id", async () => {
+    const body = buildCredentialBody();
+    const signed = signCredential(body, "new-secret", "earnproof-v99");
+    const prisma = mockPrismaWith(null);
+
+    const service = new CredentialsService(prisma as never, rotatedConfig() as never);
+
+    await expect(service.verifyCredential(signed)).resolves.toEqual({
+      result: "unsupported_key",
+    });
+  });
+
+  it("refuses a credential whose keyId names a loaded key but whose signature does not match it", async () => {
+    const body = buildCredentialBody();
+    // Signed with the wrong secret for the claimed key id.
+    const signed = signCredential(body, "wrong-secret", "earnproof-v1");
+    const prisma = mockPrismaWith(null);
+
+    const service = new CredentialsService(prisma as never, rotatedConfig() as never);
+
+    await expect(service.verifyCredential(signed)).resolves.toEqual({
+      result: "invalid_signature",
+    });
   });
 });

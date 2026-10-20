@@ -10,7 +10,13 @@ import {
   HorizonTransport,
   retryAfterFrom,
 } from "./horizon-transport";
-import { HorizonPaymentRecord, NormalizedPayment } from "./stellar.types";
+import {
+  HorizonLedgerSummary,
+  HorizonOperationSummary,
+  HorizonPaymentRecord,
+  NormalizedPayment,
+} from "./stellar.types";
+import { operationIndexFromToid } from "./operation-identity";
 
 /**
  * Cursor-paginated, fault-classifying reader for a Horizon payments feed.
@@ -25,10 +31,16 @@ import { HorizonPaymentRecord, NormalizedPayment } from "./stellar.types";
  *
  * ## Ordering
  *
- * Pages are walked newest-first (`order=desc`). That keeps the existing product
- * behaviour, where a bounded sync returns the most recent activity rather than
- * the oldest, and it makes the time bound meaningful: once a page's oldest
- * record precedes the boundary, nothing further back can be in range.
+ * Pages are walked newest-first (`order=desc`) by default. That keeps the
+ * existing product behaviour, where a bounded sync returns the most recent
+ * activity rather than the oldest, and it makes the time and ledger bounds
+ * meaningful: once a page's oldest record precedes the boundary, nothing further
+ * back can be in range.
+ *
+ * A caller resuming from a verified checkpoint asks for `order=asc` instead.
+ * Walking forward from the checkpoint is the only order in which a bounded read
+ * cannot leave a gap: whatever the page bound cuts off is still ahead of the
+ * cursor the read hands back.
  *
  * ## Cursors are rebuilt, never followed
  *
@@ -68,7 +80,9 @@ export type StopReason =
   | "record_bound"
   | "time_bound"
   /** The same cursor came back twice — Horizon is looping. */
-  | "repeated_cursor";
+  | "repeated_cursor"
+  /** A record predated `minPagingToken`. Only reachable newest-first. */
+  | "ledger_bound";
 
 export interface HorizonReadOptions {
   /** Cancels the read between and during requests. */
@@ -77,11 +91,20 @@ export interface HorizonReadOptions {
   notBefore?: Date;
   /** Resume from a cursor a previous read returned. */
   cursor?: string;
+  /** Walk direction. Defaults to `desc` (newest first). */
+  order?: HorizonReadOrder;
+  /**
+   * Stop once a record's paging token is below this one. Newest-first only;
+   * bounds a reconciliation read to the configured ledger history.
+   */
+  minPagingToken?: string;
   pageLimit?: number;
   maxPages?: number;
   maxRecords?: number;
   maxAttemptsPerPage?: number;
 }
+
+export type HorizonReadOrder = "asc" | "desc";
 
 export interface HorizonReadResult {
   payments: NormalizedPayment[];
@@ -99,6 +122,33 @@ export interface HorizonReadResult {
   stopReason: StopReason;
 }
 
+/** One record of an ascending page, keyed by its Horizon paging token. */
+export interface AscendingPaymentRecord {
+  /**
+   * The record's paging token as a TOID (ledger << 32 | tx << 12 | op), or
+   * null when Horizon returned a non-numeric id. TOIDs order records by
+   * ledger, which is what makes a ledger-bounded scan possible.
+   */
+  toid: bigint | null;
+  /** The normalized incoming payment, or null for any other record. */
+  payment: NormalizedPayment | null;
+}
+
+export interface AscendingPaymentsPage {
+  records: AscendingPaymentRecord[];
+  /** Cursor for the following page; null when Horizon offers none. */
+  nextCursor: string | null;
+  attempts: number;
+}
+
+export interface AscendingPageOptions {
+  /** Exclusive lower bound: records strictly after this paging token. */
+  cursor: string;
+  pageLimit?: number;
+  maxAttemptsPerPage?: number;
+  signal?: AbortSignal;
+}
+
 export interface HorizonClientOptions {
   horizonUrl: string;
   transport?: HorizonTransport;
@@ -106,6 +156,12 @@ export interface HorizonClientOptions {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   timeoutMs?: number;
   backoffMs?: number;
+  /**
+   * Source of [0, 1) for backoff jitter. Injected so a test can pin the delay;
+   * defaults to `Math.random` in production. See {@link HorizonClient} for why
+   * the retry delay is jittered rather than deterministic.
+   */
+  random?: () => number;
 }
 
 /** Raised when the caller's signal aborts the read. Never retried. */
@@ -122,6 +178,7 @@ export class HorizonClient {
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly timeoutMs: number;
   private readonly backoffMs: number;
+  private readonly random: () => number;
 
   /**
    * Reads already running, keyed by account and options.
@@ -140,6 +197,7 @@ export class HorizonClient {
     this.sleep = options.sleep ?? defaultSleep;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.backoffMs = options.backoffMs ?? DEFAULT_BACKOFF_MS;
+    this.random = options.random ?? Math.random;
   }
 
   /**
@@ -170,6 +228,52 @@ export class HorizonClient {
     return started;
   }
 
+  /**
+   * Reads exactly one page of an account's payments in ascending order,
+   * starting strictly after `cursor`.
+   *
+   * Used by ledger-range backfills, which walk history oldest-first from
+   * their own checkpoint. It is deliberately separate from
+   * {@link listIncomingPayments}: it never coalesces, never walks further
+   * than one page, and shares no cursor with the forward sync.
+   */
+  async readPaymentsPageAscending(
+    address: string,
+    options: AscendingPageOptions,
+  ): Promise<AscendingPaymentsPage> {
+    const url = this.pageUrl(
+      address,
+      options.pageLimit ?? DEFAULT_PAGE_LIMIT,
+      "asc",
+      options.cursor,
+    );
+    let attempts = 0;
+    const page = await this.fetchPage(
+      url,
+      options.maxAttemptsPerPage ?? DEFAULT_MAX_ATTEMPTS,
+      options.signal,
+      (used) => {
+        attempts += used;
+      },
+    );
+
+    const records = page.records.map((record): AscendingPaymentRecord => {
+      const id =
+        record && typeof record === "object" && !Array.isArray(record)
+          ? (record as { id?: unknown }).id
+          : undefined;
+      const toid =
+        typeof id === "string" && /^\d{1,20}$/.test(id) ? BigInt(id) : null;
+      const normalized = normalizeRecord(record, address);
+      return {
+        toid,
+        payment: typeof normalized === "object" ? normalized : null,
+      };
+    });
+
+    return { records, nextCursor: page.nextCursor, attempts };
+  }
+
   private async read(
     address: string,
     options: HorizonReadOptions,
@@ -178,7 +282,12 @@ export class HorizonClient {
     const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
     const maxRecords = options.maxRecords ?? DEFAULT_MAX_RECORDS;
     const maxAttempts = options.maxAttemptsPerPage ?? DEFAULT_MAX_ATTEMPTS;
+    const order = options.order ?? "desc";
     const notBefore = options.notBefore?.getTime();
+    const minPagingToken =
+      order === "desc" && options.minPagingToken !== undefined
+        ? parsePagingToken(options.minPagingToken)
+        : undefined;
 
     const payments: NormalizedPayment[] = [];
     /** Operation ids already accepted, so a replayed page cannot double-count. */
@@ -202,7 +311,7 @@ export class HorizonClient {
 
       this.assertNotCancelled(options.signal);
 
-      const url = this.pageUrl(address, pageLimit, cursor);
+      const url = this.pageUrl(address, pageLimit, order, cursor);
       const page = await this.fetchPage(url, maxAttempts, options.signal, (used) => {
         attempts += used;
       });
@@ -219,6 +328,7 @@ export class HorizonClient {
       }
 
       let crossedTimeBound = false;
+      let crossedLedgerBound = false;
 
       for (const record of records) {
         recordsSeen += 1;
@@ -233,7 +343,18 @@ export class HorizonClient {
         if (normalized === "not-incoming") continue;
 
         if (notBefore !== undefined && normalized.occurredAt.getTime() < notBefore) {
-          crossedTimeBound = true;
+          // Walking forward, an older record is simply out of range; only a
+          // newest-first walk can conclude that nothing further is in range.
+          if (order === "desc") crossedTimeBound = true;
+          continue;
+        }
+
+        if (
+          minPagingToken !== undefined &&
+          normalized.pagingToken !== undefined &&
+          BigInt(normalized.pagingToken) < minPagingToken
+        ) {
+          crossedLedgerBound = true;
           continue;
         }
 
@@ -259,6 +380,11 @@ export class HorizonClient {
         // Pages are newest-first, so once a record precedes the boundary every
         // later page does too.
         stopReason = "time_bound";
+        break;
+      }
+
+      if (crossedLedgerBound) {
+        stopReason = "ledger_bound";
         break;
       }
 
@@ -298,12 +424,70 @@ export class HorizonClient {
    * one still has its full budget for page two — a shared budget would let one
    * unlucky page starve the rest of the sync.
    */
-  private async fetchPage(
+  private fetchPage(
     url: string,
     maxAttempts: number,
     signal: AbortSignal | undefined,
     countAttempts: (used: number) => void,
   ): Promise<ParsedPage> {
+    return this.fetchResource(url, maxAttempts, signal, countAttempts, parsePage);
+  }
+
+  /**
+   * Reads one ledger's sequence and hash, or `null` when Horizon has no such
+   * ledger.
+   *
+   * This is the anchor of checkpoint finality: a checkpoint records the hash of
+   * the ledger it was taken at, and a later read of the same sequence that
+   * yields a different hash means Horizon's view of history has changed.
+   */
+  async getLedger(
+    sequence: number,
+    signal?: AbortSignal,
+  ): Promise<HorizonLedgerSummary | null> {
+    return this.fetchSingle(
+      `${this.horizonUrl}/ledgers/${encodeURIComponent(String(sequence))}`,
+      signal,
+      parseLedger,
+    );
+  }
+
+  /** Reads one operation's identity, or `null` when Horizon has no such operation. */
+  async getOperation(
+    operationId: string,
+    signal?: AbortSignal,
+  ): Promise<HorizonOperationSummary | null> {
+    return this.fetchSingle(
+      `${this.horizonUrl}/operations/${encodeURIComponent(operationId)}`,
+      signal,
+      parseOperation,
+    );
+  }
+
+  /**
+   * One non-paginated resource. A 404 is an answer — the resource is absent —
+   * not a fault, so it comes back as `null` instead of an error.
+   */
+  private async fetchSingle<T>(
+    url: string,
+    signal: AbortSignal | undefined,
+    parse: (body: unknown) => T | null,
+  ): Promise<T | null> {
+    try {
+      return await this.fetchResource(url, DEFAULT_MAX_ATTEMPTS, signal, () => undefined, parse);
+    } catch (error) {
+      if (error instanceof HorizonFault && error.kind === "not_found") return null;
+      throw error;
+    }
+  }
+
+  private async fetchResource<T>(
+    url: string,
+    maxAttempts: number,
+    signal: AbortSignal | undefined,
+    countAttempts: (used: number) => void,
+    parse: (body: unknown) => T | null,
+  ): Promise<T> {
     let lastFault: HorizonFault | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -320,7 +504,7 @@ export class HorizonClient {
         });
 
         if (response.status >= 200 && response.status < 300) {
-          const parsed = parsePage(response.body);
+          const parsed = parse(response.body);
           if (parsed) return parsed;
 
           // A 2xx whose body is not a Horizon collection will not become one on
@@ -352,10 +536,15 @@ export class HorizonClient {
 
       if (!isRetryable(fault.kind) || attempt === maxAttempts) break;
 
+      // Retry-After is obeyed exactly — Horizon told us how long to wait, and
+      // jittering a server-supplied delay would only disobey it. The client's
+      // own exponential backoff, by contrast, is jittered (full jitter, uniform
+      // in [0, cap]): without it, every worker that hit the same outage retries
+      // on the same ticks and stampedes the recovering dependency in lockstep.
       const delay =
         fault.retryAfterSeconds !== undefined
           ? fault.retryAfterSeconds * 1000
-          : this.backoffMs * Math.pow(2, attempt - 1);
+          : Math.floor(this.random() * this.backoffMs * Math.pow(2, attempt - 1));
 
       await this.sleep(delay, signal);
     }
@@ -363,12 +552,17 @@ export class HorizonClient {
     throw lastFault ?? new HorizonFault("network_error", faultMessage("network_error"));
   }
 
-  private pageUrl(address: string, limit: number, cursor?: string): string {
+  private pageUrl(
+    address: string,
+    limit: number,
+    order: HorizonReadOrder,
+    cursor?: string,
+  ): string {
     const url = new URL(
       `${this.horizonUrl}/accounts/${encodeURIComponent(address)}/payments`,
     );
     url.searchParams.set("limit", String(limit));
-    url.searchParams.set("order", "desc");
+    url.searchParams.set("order", order);
     if (cursor) url.searchParams.set("cursor", cursor);
     return url.toString();
   }
@@ -414,6 +608,46 @@ function parsePage(body: unknown): ParsedPage | null {
     records: records ?? [],
     nextCursor: extractCursor(collection._links?.next?.href),
   };
+}
+
+function parseLedger(body: unknown): HorizonLedgerSummary | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const ledger = body as { sequence?: unknown; hash?: unknown };
+  const sequence =
+    typeof ledger.sequence === "number" ? ledger.sequence : Number(ledger.sequence);
+  if (!Number.isSafeInteger(sequence) || sequence <= 0) return null;
+  if (typeof ledger.hash !== "string" || !/^[0-9a-f]{64}$/i.test(ledger.hash)) return null;
+  return { sequence, hash: ledger.hash.toLowerCase() };
+}
+
+function parseOperation(body: unknown): HorizonOperationSummary | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const operation = body as {
+    id?: unknown;
+    paging_token?: unknown;
+    transaction_hash?: unknown;
+  };
+  if (typeof operation.id !== "string" || operation.id.length === 0) return null;
+  if (typeof operation.transaction_hash !== "string") return null;
+  if (typeof operation.paging_token !== "string" || !isPagingToken(operation.paging_token)) {
+    return null;
+  }
+  return {
+    id: operation.id,
+    pagingToken: operation.paging_token,
+    transactionHash: operation.transaction_hash,
+  };
+}
+
+const MAX_PAGING_TOKEN = BigInt("18446744073709551615");
+
+/** Paging tokens are unsigned 64-bit decimal strings. */
+export function isPagingToken(value: string): boolean {
+  return /^\d{1,20}$/.test(value) && BigInt(value) <= MAX_PAGING_TOKEN;
+}
+
+function parsePagingToken(value: string): bigint | undefined {
+  return isPagingToken(value) ? BigInt(value) : undefined;
 }
 
 /**
@@ -472,8 +706,20 @@ export function normalizeRecord(record: unknown, address: string): RecordOutcome
   const isNative = candidate.asset_type === "native";
   if (!isNative && typeof candidate.asset_code !== "string") return "malformed";
 
+  // Absent on some synthetic records; present on every real Horizon record.
+  // A token that is present but unreadable is corrupt, not optional.
+  let pagingToken: string | undefined;
+  if (candidate.paging_token !== undefined) {
+    if (typeof candidate.paging_token !== "string" || !isPagingToken(candidate.paging_token)) {
+      return "malformed";
+    }
+    pagingToken = candidate.paging_token;
+  }
+
   return {
     operationId: candidate.id,
+    ...(pagingToken !== undefined ? { pagingToken } : {}),
+    operationIndex: operationIndexFromToid(candidate.id),
     stellarTransactionHash: candidate.transaction_hash,
     sourceAddress: candidate.from,
     destinationAddress: candidate.to as string,
@@ -521,6 +767,8 @@ function coalescingKey(address: string, options: HorizonReadOptions): string {
   return JSON.stringify([
     address,
     options.cursor ?? null,
+    options.order ?? null,
+    options.minPagingToken ?? null,
     options.pageLimit ?? null,
     options.maxPages ?? null,
     options.maxRecords ?? null,

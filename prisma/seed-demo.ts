@@ -57,6 +57,57 @@ async function main(): Promise<void> {
       for (const line of drift) console.error(`  - ${line}`);
       process.exitCode = 1;
     }
+
+    for (const webhook of scenario.webhooks) {
+      await prisma.webhook.upsert({
+        where: { id: webhook.id },
+        update: { url: webhook.url },
+        create: {
+          id: webhook.id,
+          organizationId: webhook.organizationId,
+          url: webhook.url,
+          // The schema stores the secret encrypted. The factory's plaintext
+          // value is a synthetic placeholder, not a real credential, and is
+          // written here only so the column is populated for local use.
+          secretEncrypted: webhook.secret,
+          events: ["proof.created"],
+        },
+      });
+    }
+
+    for (const delivery of scenario.deliveries) {
+      await prisma.webhookDelivery.upsert({
+        where: { id: delivery.id },
+        update: { status: delivery.status },
+        create: {
+          id: delivery.id,
+          webhookId: delivery.webhookId,
+          eventType: delivery.eventType,
+          eventId: delivery.eventId,
+          payload: delivery.payload as object,
+          // Synthetic demo rows: the stored body is what a retry would send.
+          schemaVersion: "1",
+          payloadBody: JSON.stringify(delivery.payload),
+          attempt: delivery.attempt,
+          status: delivery.status,
+          statusCode: delivery.statusCode,
+          failureReason: delivery.failureReason,
+          deliveredAt: delivery.deliveredAt,
+        },
+      });
+    }
+
+    const counts = {
+      users: scenario.users.length,
+      organizations: scenario.organizations.length,
+      issuers: scenario.issuers.length,
+      payments: scenario.payments.length,
+      proofs: scenario.proofs.length,
+      webhooks: scenario.webhooks.length,
+      deliveries: scenario.deliveries.length,
+    };
+
+    console.log("Synthetic demo scenario seeded:", counts);
   } finally {
     await prisma.$disconnect();
   }

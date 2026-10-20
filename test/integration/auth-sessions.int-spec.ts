@@ -78,7 +78,12 @@ describe("session validation", () => {
     const { token, sessionId } = await sessions().create(user);
 
     const validated = await sessions().validate(token);
-    expect(validated).toEqual({ sessionId, userId: user.id });
+    // The session is bound to the wallet it was issued to (wallet rotation).
+    expect(validated).toEqual({
+      sessionId,
+      userId: user.id,
+      walletHash: user.walletHash,
+    });
 
     // `lastUsedAt` is written fire-and-forget, so it is polled rather than
     // awaited: asserting immediately would be a race, and asserting nothing

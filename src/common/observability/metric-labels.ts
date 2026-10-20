@@ -61,6 +61,7 @@ export const ALLOWED_METRIC_LABELS = {
     "/issuers",
     "/payments",
     "/proofs",
+    "/proof-shares",
     "/credentials",
     "/trusted-sources",
     "/api-keys",
@@ -77,10 +78,17 @@ export const ALLOWED_METRIC_LABELS = {
     "anchoring_reconciler",
     "session_cleanup",
     "retention_cleanup",
+    "revocation_propagation_reconciler",
   ],
 
   /** Terminal state of a queued or retried unit of work. */
   job_result: ["completed", "retried", "failed_permanent", "skipped"],
+
+  /** Revocation propagation channel. */
+  channel: ["anchoring", "webhook"],
+
+  /** Observed state of one revocation-propagation channel at reconcile time. */
+  propagation_state: ["confirmed", "pending", "remediated"],
 
   /** Verification outcome, mirroring the persisted enum. */
   verification_outcome: ["valid", "invalid", "expired", "revoked", "not_found"],
@@ -90,6 +98,9 @@ export const ALLOWED_METRIC_LABELS = {
 
   /** Health verdict. */
   health: ["up", "down", "degraded"],
+
+  /** Organization operational quota. Names the quota, never the tenant. */
+  quota: ["api_keys", "webhooks", "proof_requests", "sync_frequency"],
 } as const;
 
 export type MetricLabelName = keyof typeof ALLOWED_METRIC_LABELS;

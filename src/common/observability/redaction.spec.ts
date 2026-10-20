@@ -230,6 +230,11 @@ describe("formatContext", () => {
 
   it.each([
     "walletAddress",
+    "sourceAddress",
+    "destinationAddress",
+    "sourceAddressEncrypted",
+    "destinationAddressEncrypted",
+    "sourceAddressLookup",
     "proofId",
     "credentialHash",
     "amount",

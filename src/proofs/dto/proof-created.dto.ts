@@ -77,17 +77,22 @@ export class SignedCredentialDto {
 
   @ApiProperty({
     description:
-      "Integrity proof. `credentialHash` is a SHA-256 commitment over the canonical credential body. " +
-      "`signature` is an HMAC-SHA256 over the same payload — it authenticates the credential as " +
-      "originating from this server but does NOT expose private key material.",
+      "Integrity proof. `keyId` is a non-secret identifier for the signing key version " +
+      "(e.g. `earnproof-v0`) that lets a verifier know which key to check against during " +
+      "rotation; it never exposes key material. `credentialHash` is a SHA-256 commitment " +
+      "over the canonical credential body. `signature` is an HMAC-SHA256 over the same " +
+      "payload — it authenticates the credential as originating from this server but does " +
+      "NOT expose private key material.",
     example: {
       type: "HMAC-SHA256",
+      keyId: "earnproof-v0",
       credentialHash: "sha256:abc123...",
       signature: "hmac-sha256:xyz789...",
     },
   })
   proof!: {
     type: string;
+    keyId: string;
     credentialHash: string;
     signature: string;
   };

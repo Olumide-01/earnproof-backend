@@ -1,12 +1,14 @@
 import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
-import { DisputeEvidenceService } from "./dispute-evidence.service";
+import { WebhooksModule } from "../webhooks/webhooks.module";
+import { CommonModule } from "../common/common.module";
 import { DisputesController } from "./disputes.controller";
+import { DisputesService } from "./disputes.service";
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, WebhooksModule, CommonModule],
   controllers: [DisputesController],
-  providers: [DisputeEvidenceService],
-  exports: [DisputeEvidenceService],
+  providers: [DisputesService],
+  exports: [DisputesService],
 })
 export class DisputesModule {}

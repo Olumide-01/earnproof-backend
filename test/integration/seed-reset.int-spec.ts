@@ -136,7 +136,7 @@ describe("demo seed", () => {
     }
 
     for (const payment of payments) {
-      expect(StrKey.isValidEd25519PublicKey(payment.sourceAddress)).toBe(false);
+      expect(StrKey.isValidEd25519PublicKey(payment.sourceAddress ?? "")).toBe(false);
       // The plaintext amount is never persisted: the column stays empty rather
       // than being filled with a value that bypasses the encryption boundary.
       expect(payment.amountEncrypted ?? "").toBe("");
