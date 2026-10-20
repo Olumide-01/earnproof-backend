@@ -10,6 +10,13 @@ import {
   syntheticWalletAddress,
   syntheticWalletHash,
 } from "./synthetic";
+import {
+  ASSESSMENT_VERSION,
+  CompatibilityFinding,
+  FindingSeverity,
+  CheckKind,
+  SignedArtifact,
+} from "../../contracts/assessment-types";
 
 /**
  * Intent-based factories for test and demo data.
