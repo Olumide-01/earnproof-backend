@@ -23,6 +23,7 @@ import { IdempotentInterceptor } from "./common/interceptors/idempotent.intercep
 import { ObservabilityModule } from "./common/observability/observability.module";
 import { ResilienceModule } from "./common/resilience/resilience.module";
 import { JobsModule } from "./jobs/jobs.module";
+import { MetricsModule } from "./metrics/metrics.module";
 import { IssuersModule } from "./issuers/issuers.module";
 import { OrganizationsModule } from "./organizations/organizations.module";
 import { DataResidencyModule } from "./organizations/residency/data-residency.module";
@@ -73,6 +74,7 @@ import { SecurityModule } from "./security/security.module";
     TrustedSourcesModule,
     UsersModule,
     JobsModule,
+    MetricsModule,
     WebhooksModule,
     SupportedAssetsModule,
     GovernanceModule,
