@@ -1,6 +1,9 @@
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { ProofStatus, ProofType } from "@prisma/client";
 import { ProofsService } from "./proofs.service";
+import { unlimitedQuotas } from "../testing/quotas";
+import { AttestationsService } from "../attestations/attestations.service";
+import { encodeCursor } from "../common/pagination/cursor";
 
 describe("ProofsService proof history", () => {
   const config = {
@@ -18,6 +21,9 @@ describe("ProofsService proof history", () => {
     recordEvent: jest.fn(),
     getAggregateStats: jest.fn(),
   };
+  const mockAttestationsService = {
+    getValidAttestationsForSubject: jest.fn().mockResolvedValue([]),
+  } as unknown as AttestationsService;
   const user = {
     id: "user_1",
     walletAddress: "GB_OWNER",
@@ -50,7 +56,6 @@ describe("ProofsService proof history", () => {
     const rows = [proof(), proof({ id: "proof_2" }), proof({ id: "proof_3" })];
     const prisma = {
       proof: {
-        findFirst: jest.fn().mockResolvedValue({ id: "cursor_1" }),
         findMany: jest.fn().mockResolvedValue(rows),
       },
     };
@@ -58,10 +63,16 @@ describe("ProofsService proof history", () => {
       prisma as never,
       config as never,
       events as never,
+      unlimitedQuotas() as never,
+      mockAttestationsService,
+    );
+    const cursor = encodeCursor(
+      new Date("2026-07-31T00:00:00.000Z"),
+      "cursor_1",
     );
 
     const result = await service.listProofs("user_1", {
-      cursor: "cursor_1",
+      cursor,
       limit: 2,
       type: ProofType.MINIMUM_INCOME,
       status: ProofStatus.ACTIVE,
@@ -70,10 +81,6 @@ describe("ProofsService proof history", () => {
       issuedTo: "2026-08-31T23:59:59.000Z",
     });
 
-    expect(prisma.proof.findFirst).toHaveBeenCalledWith({
-      where: { id: "cursor_1", userId: "user_1" },
-      select: { id: true },
-    });
     expect(prisma.proof.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -81,31 +88,55 @@ describe("ProofsService proof history", () => {
           proofType: ProofType.MINIMUM_INCOME,
           status: ProofStatus.ACTIVE,
           assetCode: "USDC",
+          OR: [
+            { createdAt: { lt: new Date("2026-07-31T00:00:00.000Z") } },
+            {
+              createdAt: new Date("2026-07-31T00:00:00.000Z"),
+              id: { lt: "cursor_1" },
+            },
+          ],
         }),
-        cursor: { id: "cursor_1" },
-        skip: 1,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: 3,
       }),
     );
     expect(result.data).toHaveLength(2);
-    expect(result.pageInfo).toEqual({ hasMore: true, nextCursor: "proof_2" });
+    expect(result.pageInfo.hasMore).toBe(true);
+    expect(result.pageInfo.nextCursor).toBe(
+      encodeCursor(new Date("2026-08-01T00:00:00.000Z"), "proof_2"),
+    );
   });
 
-  it("rejects a cursor that is not owned by the authenticated user", async () => {
-    const prisma = {
-      proof: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        findMany: jest.fn(),
-      },
-    };
+  it("rejects a malformed pagination cursor without querying the database", async () => {
+    const prisma = { proof: { findMany: jest.fn() } };
     const service = new ProofsService(
       prisma as never,
       config as never,
       events as never,
+      unlimitedQuotas() as never,
+      mockAttestationsService,
     );
 
     await expect(
-      service.listProofs("user_1", { cursor: "foreign", limit: 20 }),
+      service.listProofs("user_1", { cursor: "not-base64url-json", limit: 20 }),
+    ).rejects.toThrow(BadRequestException);
+    expect(prisma.proof.findMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects a cursor with an unsupported version", async () => {
+    const prisma = { proof: { findMany: jest.fn() } };
+    const service = new ProofsService(
+      prisma as never,
+      config as never,
+      events as never,
+      mockAttestationsService,
+    );
+    const futureCursor = Buffer.from(
+      JSON.stringify({ v: 999, k: new Date().toISOString(), id: "x" }),
+    ).toString("base64url");
+
+    await expect(
+      service.listProofs("user_1", { cursor: futureCursor, limit: 20 }),
     ).rejects.toThrow(BadRequestException);
     expect(prisma.proof.findMany).not.toHaveBeenCalled();
   });
@@ -116,6 +147,8 @@ describe("ProofsService proof history", () => {
       prisma as never,
       config as never,
       events as never,
+      unlimitedQuotas() as never,
+      mockAttestationsService,
     );
 
     for (const id of ["unknown", "owned-by-someone-else"]) {
@@ -151,6 +184,8 @@ describe("ProofsService proof history", () => {
       prisma as never,
       config as never,
       events as never,
+      unlimitedQuotas() as never,
+      mockAttestationsService,
     );
 
     const result = await service.listProofs("user_1", { limit: 20 });
@@ -196,6 +231,8 @@ describe("ProofsService proof history", () => {
       prisma as never,
       config as never,
       events as never,
+      unlimitedQuotas() as never,
+      mockAttestationsService,
       contract as never,
     );
 

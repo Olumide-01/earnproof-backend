@@ -36,6 +36,9 @@ function makeAnchoring(result: unknown = { anchored: true, transactionHash: "tx_
   return {
     anchorProof: jest.fn().mockResolvedValue(result),
     revokeProof: jest.fn().mockResolvedValue(result),
+    // Backpressure consults the dependency circuit before claiming; a closed
+    // circuit is the default so existing behaviour is unchanged.
+    circuitState: jest.fn().mockReturnValue("closed"),
   };
 }
 
@@ -176,7 +179,7 @@ describe("AnchoringWorkerService", () => {
       );
     });
 
-    it("marks an intent permanently failed when error matches a permanent pattern", async () => {
+    it("quarantines an intent as CHAIN_REJECTED when error matches a chain-rejection pattern", async () => {
       const prisma = makePrisma();
       const anchoring = {
         anchorProof: jest.fn().mockRejectedValue(new Error("proof already registered")),
@@ -193,14 +196,42 @@ describe("AnchoringWorkerService", () => {
       expect(prisma.anchoringIntent.update).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
-            status: AnchoringStatus.FAILED,
+            status: AnchoringStatus.QUARANTINED,
             permanentError: true,
+            quarantineReasonCode: "CHAIN_REJECTED",
+            quarantineDecision: "PENDING",
+            quarantinedAt: expect.any(Date),
           }),
         }),
       );
     });
 
-    it("marks an intent permanently failed when MAX_ATTEMPTS is reached", async () => {
+    it("quarantines an intent as POISON_INPUT when the error says the input itself cannot succeed", async () => {
+      const prisma = makePrisma();
+      const anchoring = {
+        anchorProof: jest.fn().mockRejectedValue(new Error("proof not found")),
+        revokeProof: jest.fn(),
+      };
+      const worker = new AnchoringWorkerService(
+        prisma as never,
+        anchoring as never,
+        makeConfig() as never,
+      );
+
+      await worker.processIntent("intent_1");
+
+      expect(prisma.anchoringIntent.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: AnchoringStatus.QUARANTINED,
+            permanentError: true,
+            quarantineReasonCode: "POISON_INPUT",
+          }),
+        }),
+      );
+    });
+
+    it("quarantines an intent as MAX_ATTEMPTS_EXCEEDED when MAX_ATTEMPTS is reached", async () => {
       // Simulate attemptCount already at 9 (one below max 10).
       const prisma = makePrisma({ attemptCount: 9 });
       const anchoring = {
@@ -218,11 +249,27 @@ describe("AnchoringWorkerService", () => {
       expect(prisma.anchoringIntent.update).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
-            status: AnchoringStatus.FAILED,
+            status: AnchoringStatus.QUARANTINED,
             permanentError: true,
+            quarantineReasonCode: "MAX_ATTEMPTS_EXCEEDED",
           }),
         }),
       );
+    });
+
+    it("skips terminal intents — QUARANTINED intent is a no-op (never auto-retried)", async () => {
+      const prisma = makePrisma({ status: AnchoringStatus.QUARANTINED });
+      const anchoring = makeAnchoring();
+      const worker = new AnchoringWorkerService(
+        prisma as never,
+        anchoring as never,
+        makeConfig() as never,
+      );
+
+      await worker.processIntent("intent_1");
+
+      expect(anchoring.anchorProof).not.toHaveBeenCalled();
+      expect(prisma.anchoringIntent.update).not.toHaveBeenCalled();
     });
 
     it("does NOT store secrets in lastErrorSafe when error contains a Stellar secret key pattern", async () => {

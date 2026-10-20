@@ -9,6 +9,9 @@ describe("CleanupJob", () => {
       walletChallenge: {
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
+      walletRotation: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
     };
   }
 
@@ -71,5 +74,26 @@ describe("CleanupJob", () => {
     await job.deleteOldAuditEvents();
 
     expect(auditService.cleanupOldEvents).toHaveBeenCalledWith(90);
+  });
+
+  it("deletes wallet rotations whose deadline passed before the retention window", async () => {
+    const prisma = makePrismaMock();
+    prisma.walletRotation.deleteMany.mockResolvedValue({ count: 4 });
+    const job = new CleanupJob({} as never, {} as never, prisma as never, config);
+    const now = new Date("2030-01-08T00:00:00.000Z");
+
+    await expect(job.cleanupWalletRotations(now)).resolves.toBe(4);
+
+    expect(prisma.walletRotation.deleteMany).toHaveBeenCalledWith({
+      where: { expiresAt: { lt: new Date("2030-01-01T00:00:00.000Z") } },
+    });
+  });
+
+  it("reports zero instead of throwing when rotation cleanup fails", async () => {
+    const prisma = makePrismaMock();
+    prisma.walletRotation.deleteMany.mockRejectedValue(new Error("db down"));
+    const job = new CleanupJob({} as never, {} as never, prisma as never, config);
+
+    await expect(job.cleanupWalletRotations()).resolves.toBe(0);
   });
 });

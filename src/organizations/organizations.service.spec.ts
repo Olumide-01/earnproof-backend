@@ -7,6 +7,8 @@ import { ResourceStatus } from "@prisma/client";
 import { Test, TestingModule } from "@nestjs/testing";
 import { PrismaService } from "../database/prisma.service";
 import { OrganizationsService } from "./organizations.service";
+import { OrganizationQuotaService } from "../quotas/organization-quota.service";
+import { unlimitedQuotas } from "../testing/quotas";
 
 describe("OrganizationsService", () => {
   let service: OrganizationsService;
@@ -35,12 +37,20 @@ describe("OrganizationsService", () => {
     createdById: mockUser.id,
     createdAt: new Date("2026-01-01"),
     updatedAt: new Date("2026-01-01"),
+    archivedAt: null,
+    legalHoldAt: null,
+    legalHoldReference: null,
+    deletedAt: null,
   };
 
+  let quotas: ReturnType<typeof unlimitedQuotas>;
+
   beforeEach(async () => {
+    quotas = unlimitedQuotas();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OrganizationsService,
+        { provide: OrganizationQuotaService, useValue: quotas },
         {
           provide: PrismaService,
           useValue: {
@@ -303,6 +313,39 @@ describe("OrganizationsService", () => {
         service.getOrganization(mockIssuerUser, "org-1"),
       ).rejects.toThrow(NotFoundException);
       expect(prisma.issuer.count).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("getUsage", () => {
+    it("returns the quota report to an authorized user", async () => {
+      jest
+        .spyOn(prisma.organization, "findUnique")
+        .mockResolvedValue(mockOrganization);
+      const report = { organizationId: "org-1", quotas: [] };
+      quotas.getUsage.mockResolvedValue(report as never);
+
+      await expect(service.getUsage(mockUser, "org-1")).resolves.toBe(report);
+      expect(quotas.getUsage).toHaveBeenCalledWith("org-1");
+    });
+
+    it("refuses another user's organization without reading usage", async () => {
+      jest
+        .spyOn(prisma.organization, "findUnique")
+        .mockResolvedValue(mockOrganization);
+
+      await expect(
+        service.getUsage(mockIssuerUser, "org-1"),
+      ).rejects.toThrow(ForbiddenException);
+      expect(quotas.getUsage).not.toHaveBeenCalled();
+    });
+
+    it("reports an unknown organization as not found", async () => {
+      jest.spyOn(prisma.organization, "findUnique").mockResolvedValue(null);
+
+      await expect(service.getUsage(mockUser, "missing")).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(quotas.getUsage).not.toHaveBeenCalled();
     });
   });
 });

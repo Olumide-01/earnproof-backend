@@ -7,14 +7,12 @@ cryptographic key-rotation rehearsal and runbook" production-readiness
 work.
 
 Scope: this document defines policy for all five cryptographic purposes in
-the system. Code changes were made only for payment-encryption keys (the
-only purpose that previously had a single, unversioned key and no rotation
-path). Session signing and credential signing already have a rotation
-policy defined below but are not code-changed in this pass (see
-"Deferred: session and credential signing" below for why that is a safe,
-explicitly scoped trade-off). Verification-event hash salts and webhook
-HMAC secrets already have adequate rotation mechanisms and are documented
-for completeness and consistency, not changed.
+the system. Payment-encryption keys and credential-signing keys both have
+staged, dual-read (verify-only) rotation support. Session signing does not
+(see "Deferred: session signing" below for why that is a safe, explicitly
+scoped trade-off). Verification-event hash salts and webhook HMAC secrets
+already have adequate rotation mechanisms and are documented for
+completeness and consistency, not changed.
 
 ## 1. Cryptographic purposes and key identifiers
 
@@ -23,10 +21,12 @@ identifier namespace. Keys are never shared across purposes.
 
 | Purpose | Env var(s) | Key identifier | Rotation support |
 |---|---|---|---|
+| Payment amount / webhook secret encryption (AES-256-GCM) | `PAYMENT_ENCRYPTION_KEY`, `PAYMENT_ENCRYPTION_KEY_V0`, `_V1`, ... + `PAYMENT_ENCRYPTION_KEY_VERSION` | Numeric version embedded in ciphertext (`enc:v<N>:...`) | Yes — staged, dual-read |
 | Payment amount / webhook secret encryption (AES-256-GCM) | `PAYMENT_ENCRYPTION_KEY`, `PAYMENT_ENCRYPTION_KEY_V0`, `_V1`, ... + `PAYMENT_ENCRYPTION_KEY_VERSION` | Numeric version embedded in ciphertext (`enc:v<N>:...`) | Yes — staged, dual-read (this pass) |
+| Payment address encryption and lookup tokens (AES-256-GCM, HMAC-SHA256; keys derived with HKDF) | Derived from `PAYMENT_ENCRYPTION_KEY_V<N>`; no separate variable | `aenc:v<N>:...` ciphertext, `hmac:v<N>:...` token | Yes — staged, dual-read, backfill re-protects |
 | Verification-event metadata hashing (HMAC-SHA256) | `VERIFICATION_HASH_SALT_V0`, `_V1`, ... + `VERIFICATION_HASH_SALT_VERSION` | Numeric version stored per-row (`saltVersion` column) | Yes — pre-existing pattern, mirrored by payment encryption |
 | Session token hashing | `SESSION_SECRET` | None (single key) | Documented policy only, no code change |
-| Credential signing (HMAC-SHA256 over canonicalized payload) | `CREDENTIAL_SIGNING_SECRET` | None (single key) | Documented policy only, no code change |
+| Credential signing (HMAC-SHA256 over canonicalized payload) | `CREDENTIAL_SIGNING_SECRET`, `CREDENTIAL_SIGNING_SECRET_V0`, `_V1`, ... + `CREDENTIAL_SIGNING_KEY_VERSION`, optional `_V<N>_VERIFY_UNTIL` | Non-secret `keyId` (`earnproof-v<N>`) carried in the credential's own `proof` block | Yes — staged, verify-only, with an optional time-bounded overlap window |
 | Webhook delivery signing (HMAC-SHA256) | Per-webhook `signingSecret`, stored encrypted per row via the payment-encryption key | Webhook row ID (implicit) | Yes — per-entity, not globally rotated (already fine) |
 
 Each purpose's key is decodable/derivable independently: compromising the
@@ -107,6 +107,12 @@ configured for as long as any row might still hold `enc:v0:...` ciphertext
 in practice this window is indefinite unless a backfill job re-encrypts
 old rows under v1 — no such backfill exists today; retiring v0 is an
 explicit operator decision, not automatic).
+
+Payment account addresses are the exception: their keys are derived from the
+same `PAYMENT_ENCRYPTION_KEY_V<N>`, and `npm run payments:backfill-addresses`
+re-encrypts and re-tokens them under the active version. Run it after Stage 2
+and before retiring an old version. See
+[payment address encryption](payment-address-encryption.md).
 
 **Stage 4 — retire.** Once satisfied nothing still needs v0 (verified via a
 backfill, a data audit, or an accepted retention/expiry cutoff), remove
@@ -198,17 +204,24 @@ Verified for every file touched in this work:
   (`"Loaded versions: [0, 1]"`, `"Configured active payment encryption key
   version 5 is not loaded"`) — never the key strings themselves. See
   `src/common/crypto/payment-encryption-keyring.service.ts`.
+- `CredentialSigningKeyringService` follows the identical rule: startup
+  diagnostics and the malformed-`VERIFY_UNTIL` warning log only version
+  numbers, key IDs (`earnproof-v<N>`, non-secret by construction), and
+  timestamps — never a secret. See
+  `src/common/crypto/credential-signing-keyring.service.ts`.
 - `protected-amount.ts`'s error paths (`UnknownKeyVersionError`, the
   32-byte decode-length error) include the key **version number** for
   operator diagnosis, never the key material.
 - `VerificationEventService` follows the same rule for
   `VERIFICATION_HASH_SALT_*` — its warnings reference version numbers and
   counts only.
-- `WebhookSigningService`, `session.service.ts`, `auth-token.service.ts`,
-  and `credentials.service.ts` do not log their secrets; grepped for
-  `logger.*secret`, `logger.*[Kk]ey`, and raw secret variable names across
-  `src/auth/`, `src/credentials/`, `src/webhooks/`, and
-  `src/common/crypto/` as part of this change with no hits.
+- `WebhookSigningService`, `session.service.ts`, and `auth-token.service.ts`
+  do not log their secrets; grepped for `logger.*secret`, `logger.*[Kk]ey`,
+  and raw secret variable names across `src/auth/`, `src/credentials/`,
+  `src/webhooks/`, and `src/common/crypto/` as part of this change with no
+  hits. `credentials.service.ts`'s `credential_verify` log line includes
+  `keyId` on an `unsupported_key` result — a non-secret identifier, never
+  the secret it names.
 - None of the four payment-encryption consumer call sites
   (`payments.service.ts`, `proofs.service.ts`,
   `webhook-delivery.service.ts`, `webhooks.service.ts`) log the key,
@@ -229,47 +242,92 @@ openssl rand -base64 32
 openssl rand -hex 32
 ```
 
-The same commands apply to `VERIFICATION_HASH_SALT_V<N>` values. Neither
-command, nor its output, should ever appear in application logs, CI logs,
-or shell history retained on a shared system — generate directly into the
-secret manager where possible (`op run`, `aws secretsmanager`, `vault kv
-put`, etc., depending on deployment environment) rather than printing to a
-terminal that gets logged.
+The same commands apply to `VERIFICATION_HASH_SALT_V<N>` and
+`CREDENTIAL_SIGNING_SECRET_V<N>` values (credential signing has no minimum
+length beyond the 8-character floor `env.validation.ts` enforces, but a
+generated 32-byte value is a reasonable default). Neither command, nor its
+output, should ever appear in application logs, CI logs, or shell history
+retained on a shared system — generate directly into the secret manager
+where possible (`op run`, `aws secretsmanager`, `vault kv put`, etc.,
+depending on deployment environment) rather than printing to a terminal
+that gets logged.
 
-## 8. Deferred: session and credential signing
+## 8. Credential signing key rotation
 
-`SESSION_SECRET` and `CREDENTIAL_SIGNING_SECRET` are single, unversioned
-keys today (`src/auth/session.service.ts`, `src/auth/auth-token.service.ts`,
-`src/credentials/credentials.service.ts`). This pass does not add
-versioning code for them. This is a scoped trade-off, not an oversight:
+`CredentialSigningKeyringService`
+(`src/common/crypto/credential-signing-keyring.service.ts`) versions
+`CREDENTIAL_SIGNING_SECRET` using the same loading convention as
+`PaymentEncryptionKeyringService`: `CREDENTIAL_SIGNING_SECRET_V0`, `_V1`,
+... loaded sequentially until the first gap, with the legacy unversioned
+`CREDENTIAL_SIGNING_SECRET` treated as an implicit version 0 when
+`CREDENTIAL_SIGNING_SECRET_V0` is not set. `CREDENTIAL_SIGNING_KEY_VERSION`
+selects the active signing version.
 
-- **Session tokens are short-lived** (12-hour default TTL — see
-  `DEFAULT_TTL_SECONDS` in `session.service.ts`) and the session store is
-  a database lookup by hash, not a self-contained signed token in the
-  primary flow (`AuthTokenService`, which does sign self-contained tokens,
-  is already marked `@deprecated` in favor of `SessionService`). Rotating
-  `SESSION_SECRET` without a dual-read path simply invalidates all
-  outstanding sessions — an acceptable, bounded blast radius (users
-  re-authenticate) rather than a silent-corruption risk.
-- **Credential signing** (`credentials.service.ts`) signs long-lived
-  externally-verifiable credentials. This *is* a case where the same
-  versioned-key pattern used for payment encryption would be the correct
-  future direction — verifiers need to keep validating credentials signed
-  under an old key after rotation. It is deferred here strictly to keep
-  this change to its documented scope (payment encryption keys, plus
-  policy documentation for the rest); implementing it should follow
-  exactly the `PaymentEncryptionKeyringService` shape: `CREDENTIAL_SIGNING_SECRET_V0`,
-  `_V1`, ..., `CREDENTIAL_SIGNING_SECRET_VERSION`, with the signature
-  itself carrying the key version so verification can dual-read.
-- **Operator policy in the meantime**: rotating either secret today is a
-  hard cutover — plan rotations for low-traffic windows, expect all active
-  sessions to be invalidated (`SESSION_SECRET`) and all credentials
-  verified against the *old* secret to fail signature checks
-  (`CREDENTIAL_SIGNING_SECRET`) until re-issued. Do not rotate
-  `CREDENTIAL_SIGNING_SECRET` without a plan to re-issue affected
-  credentials, since there is currently no dual-read fallback.
+Credential signing differs from payment encryption in two ways:
 
-## 9. Why webhook HMAC secrets are not globally rotated
+- **The key identifier travels with the credential, not the ciphertext.**
+  Every newly-issued credential's `proof` block carries a non-secret
+  `keyId` (`earnproof-v<N>`, from `CredentialSigningKeyringService.activeKeyId`
+  / the `keyId()` / `versionFromKeyId()` helpers) alongside the signature.
+  `CredentialsService.verifyCredential` (`src/credentials/credentials.service.ts`)
+  reads `keyId` to select which secret to verify against — the same
+  dual-read principle as payment encryption's `enc:v<N>:` prefix, applied
+  to a signed document instead of ciphertext. A credential with no `keyId`
+  (issued before this feature existed) is treated as legacy version 0.
+- **A verify-only key can have an explicit, time-bounded overlap window.**
+  Because there is no ciphertext that must keep decrypting forever, an
+  operator demoting a version from active to verify-only may set
+  `CREDENTIAL_SIGNING_SECRET_V<N>_VERIFY_UNTIL` (an ISO-8601 instant). Past
+  that instant, `CredentialSigningKeyringService.isUsableForVerification(N)`
+  returns `false` and `CredentialsService.verifyCredential` returns
+  `unsupported_key` for any credential still claiming that key — even
+  though the secret is technically still loaded. A version with no
+  `VERIFY_UNTIL` set never expires on its own; it stays verify-only
+  indefinitely until retired (its `_V<N>` env var removed). The **active**
+  version is never subject to a deadline, regardless of configuration.
+
+The same four-stage shape as §3 applies:
+
+1. **Introduce** `CREDENTIAL_SIGNING_SECRET_V1`, leave `CREDENTIAL_SIGNING_KEY_VERSION`
+   unset (or `0`) — new credentials still sign with v0.
+2. **Cut writes over**: set `CREDENTIAL_SIGNING_KEY_VERSION=1`. New
+   credentials are signed with v1 and carry `keyId: "earnproof-v1"`.
+   Credentials already issued under v0 keep verifying, since v0 is still
+   loaded and its `keyId` (`earnproof-v0`) is still recognized.
+3. **Retiring**: optionally set `CREDENTIAL_SIGNING_SECRET_V0_VERIFY_UNTIL`
+   to a deadline once existing v0-signed credentials are expected to have
+   expired or been re-issued, bounding how long v0 stays trusted for
+   verification without having to remove it immediately.
+4. **Retire**: remove `CREDENTIAL_SIGNING_SECRET_V0` entirely (after any
+   `VERIFY_UNTIL` deadline has passed, or directly if none was set). Any
+   credential still claiming `keyId: "earnproof-v0"` now verifies as
+   `unsupported_key` rather than silently failing signature comparison or,
+   worse, being checked against the wrong key.
+
+`test/crypto/credential-signing-key-rotation.spec.ts` rehearses this exact
+sequence, including the bounded-overlap-window and restart steps, with
+synthetic test secrets — the credential-signing equivalent of
+`test/crypto/key-rotation.spec.ts`.
+
+## 9. Deferred: session signing
+
+`SESSION_SECRET` is a single, unversioned key today
+(`src/auth/session.service.ts`, `src/auth/auth-token.service.ts`). This
+pass does not add versioning code for it. This is a scoped trade-off, not
+an oversight: session tokens are short-lived (12-hour default TTL — see
+`DEFAULT_TTL_SECONDS` in `session.service.ts`) and the session store is a
+database lookup by hash, not a self-contained signed token in the primary
+flow (`AuthTokenService`, which does sign self-contained tokens, is already
+marked `@deprecated` in favor of `SessionService`). Rotating
+`SESSION_SECRET` without a dual-read path simply invalidates all
+outstanding sessions — an acceptable, bounded blast radius (users
+re-authenticate) rather than a silent-corruption risk.
+
+**Operator policy in the meantime**: rotating `SESSION_SECRET` is a hard
+cutover — plan it for a low-traffic window and expect all active sessions
+to be invalidated.
+
+## 10. Why webhook HMAC secrets are not globally rotated
 
 `WebhookSigningService` (`src/webhooks/webhook-signing.service.ts`) signs
 outbound webhook deliveries using a **per-webhook-endpoint** secret, stored
@@ -295,7 +353,7 @@ require touching individual webhook secrets — `WebhookDeliveryService` and
 which transparently dual-reads across payment-encryption key versions
 exactly like any other protected-amount ciphertext.
 
-## 10. Operator rehearsal checklist
+## 11. Operator rehearsal checklist
 
 Use this checklist to rehearse a payment-encryption key rotation in a
 non-production environment before ever running it against production

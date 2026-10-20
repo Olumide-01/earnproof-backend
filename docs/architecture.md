@@ -48,7 +48,9 @@ Three layers, and the direction of dependency matters:
 
 1. **Edge** — `auth`, `api-keys`. Establish who is calling.
 2. **Domain** — `organizations`, `issuers`, `payments`, `proofs`, `credentials`,
-   `trusted-sources`. Own product state.
+   `trusted-sources`, `approvals`, `schemas`. Own product state.
+2. **Domain** — `users`, `organizations`, `issuers`, `payments`, `proofs`,
+   `credentials`, `trusted-sources`. Own product state.
 3. **Infrastructure** — `common`, `config`, `database`, `stellar`, `audit`,
    `jobs`, `webhooks`, `health`. Serve the layers above.
 
@@ -67,13 +69,23 @@ Wallet-signature authentication and revocable sessions.
 
 | | |
 |---|---|
-| **Public interface** | `POST /auth/challenge`, `/auth/verify`, `/auth/logout`, `/auth/rotate`, `GET /auth/sessions` |
-| **Owned tables** | `WalletChallenge`, `AuthSession` |
-| **Key files** | [`auth.service.ts`](../src/auth/auth.service.ts), [`session.service.ts`](../src/auth/session.service.ts), [`auth-token.service.ts`](../src/auth/auth-token.service.ts), [`cleanup.job.ts`](../src/auth/cleanup.job.ts) |
+| **Public interface** | `POST /auth/challenge`, `/auth/verify`, `/auth/logout`, `/auth/rotate`, `GET /auth/sessions`, `POST /auth/wallet-rotation`, `/auth/wallet-rotation/:id/complete` |
+| **Owned tables** | `WalletChallenge`, `AuthSession`, `WalletRotation` |
+| **Key files** | [`auth.service.ts`](../src/auth/auth.service.ts), [`session.service.ts`](../src/auth/session.service.ts), [`wallet-rotation.service.ts`](../src/auth/wallet-rotation.service.ts), [`auth-token.service.ts`](../src/auth/auth-token.service.ts), [`cleanup.job.ts`](../src/auth/cleanup.job.ts) |
 | **Must not depend on** | `proofs`, `payments`, `credentials`, `webhooks` |
 
 Only a SHA-256 hash of the bearer token is stored. The raw token exists in the
 response body and nowhere else — not in the database, not in a log.
+
+A session is bound to the wallet it was issued to (`AuthSession.walletHash`),
+and `AuthGuard` refuses one whose wallet no longer matches the account. Wallet
+rotation therefore ends every session of the previous wallet structurally, not
+only through the revocation it performs: a session inserted by a login that
+raced the rotation is refused as well. Rotation requires fresh signatures from
+both the current and the replacement key over messages bound to the network,
+the origin and a single-use nonce; the rotation is consumed before either
+signature is checked, and the identity change, session revocation and audit
+record commit together.
 
 ### `api-keys` — [`src/api-keys/`](../src/api-keys/)
 
@@ -96,10 +108,70 @@ Tenant boundary. Every multi-tenant resource hangs off an organization.
 
 | | |
 |---|---|
-| **Public interface** | `/organizations` CRUD and membership |
+| **Public interface** | `/organizations` CRUD and membership; ADMIN-only `POST /organizations/:id/archive`, `/restore`, `PUT/DELETE /organizations/:id/legal-hold`, `GET /organizations/:id/deletion-eligibility`, `DELETE /organizations/:id` |
+| **Public interface** | `/organizations` CRUD and membership, `GET /organizations/:id/usage` (quota usage) |
 | **Owned tables** | `Organization` |
-| **Key files** | [`organizations.service.ts`](../src/organizations/organizations.service.ts) |
-| **Must not depend on** | `proofs`, `payments`, `credentials`, `jobs` |
+| **Key files** | [`organizations.service.ts`](../src/organizations/organizations.service.ts), [`organization-lifecycle.service.ts`](../src/organizations/organization-lifecycle.service.ts) |
+| **Must not depend on** | `proofs`, `payments`, `credentials`, `jobs` (the retention policy table in `jobs/retention` is the one exception: it defines the minimum archive period) |
+
+Archival disables an organization's privileged operations through
+`Organization.archivedAt`, which every such path reads on each call. Deletion
+turns the row into a tombstone rather than removing it, so issuers,
+attestations and audit records keep resolving. See
+[data retention](data-retention.md#organization-lifecycle).
+
+### `users` — [`src/users/`](../src/users/)
+
+Self-service profile and administrative account lifecycle.
+
+| | |
+|---|---|
+| **Public interface** | `GET/PATCH /users/me`; ADMIN-only `GET /users/:id`, `PATCH /users/:id/status`, `PATCH /users/:id/role` |
+| **Owned tables** | `User` (profile, status and role columns) |
+| **Key files** | [`users.service.ts`](../src/users/users.service.ts), [`account-status.policy.ts`](../src/auth/account-status.policy.ts) |
+| **Must not depend on** | `proofs`, `payments`, `credentials`, `webhooks` |
+
+The transition table lives in `auth` because `AuthGuard` and the login path
+enforce it on every request. A status change, its session revocation and its
+audit record commit in one transaction; role is read live by the guard, so a
+role change needs no session revocation.
+
+`organizations/residency/` enforces per-organization, per-data-class region
+allow-lists: an explicit, versioned policy that writes, exports, backups, and
+queued work are checked against before a resource is placed in a region.
+
+### `approvals` — [`src/approvals/`](../src/approvals/)
+
+A queue for privileged, side-effecting operations that require a decision
+from someone other than the requester before they run.
+
+| | |
+|---|---|
+| **Public interface** | `POST /approvals`, `/approvals/:id/approve`, `/reject`, `/cancel` |
+| **Owned tables** | `ApprovalRequest` |
+| **Key files** | [`approvals.service.ts`](../src/approvals/approvals.service.ts) |
+| **Must not depend on** | `proofs`, `payments`, `webhooks` |
+
+Self-approval is rejected outright. The PENDING → APPROVED/REJECTED/CANCELLED
+transition and the execution lease are both single conditional `updateMany`
+calls, so exactly one decision and one execution ever win under concurrency —
+see [`approvals.service.ts`](../src/approvals/approvals.service.ts).
+
+### `schemas` — [`src/schemas/`](../src/schemas/)
+
+Bulk schema-metadata imports with a zero-mutation dry-run phase.
+
+| | |
+|---|---|
+| **Public interface** | `POST /organizations/:id/schema-imports`, `/:id/approve`, `/:id/apply` |
+| **Owned tables** | `SchemaImportJob`, `SchemaImportRow`, `SchemaDefinition` |
+| **Key files** | [`schema-imports.service.ts`](../src/schemas/schema-imports.service.ts) |
+| **Must not depend on** | `proofs`, `payments`, `webhooks` |
+
+Upload and dry-run only ever write to the staging tables
+(`SchemaImportJob`/`SchemaImportRow`); `SchemaDefinition` is touched only by
+`apply`, and only when the caller's `reviewedHash` matches the dry run's
+`canonicalHash` exactly.
 
 ### `issuers` — [`src/issuers/`](../src/issuers/)
 
@@ -107,9 +179,9 @@ Trusted attestation sources and their on-chain registry mirror.
 
 | | |
 |---|---|
-| **Public interface** | `/issuers` CRUD, status transitions, registry sync |
-| **Owned tables** | `Issuer`, `Attestation` |
-| **Key files** | [`issuers.service.ts`](../src/issuers/issuers.service.ts), [`issuer-registry.service.ts`](../src/issuers/issuer-registry.service.ts) |
+| **Public interface** | `/issuers` CRUD, status transitions, registry sync, ADMIN-only `/issuers/:id/address-rotations` |
+| **Owned tables** | `Issuer`, `Attestation`, `IssuerAddressRotation`, `IssuerAddressHistory` |
+| **Key files** | [`issuers.service.ts`](../src/issuers/issuers.service.ts), [`issuer-registry.service.ts`](../src/issuers/issuer-registry.service.ts), [`issuer-address-rotation.service.ts`](../src/issuers/issuer-address-rotation.service.ts) |
 | **Must not depend on** | `proofs`, `payments` |
 
 ### `payments` — [`src/payments/`](../src/payments/)
@@ -118,9 +190,9 @@ Horizon synchronization and payment classification.
 
 | | |
 |---|---|
-| **Public interface** | `POST /payments/sync`, `GET /payments`, `PATCH /payments/:id/classification` |
-| **Owned tables** | `Payment`, `SupportedAsset` |
-| **Key files** | [`payments.service.ts`](../src/payments/payments.service.ts) |
+| **Public interface** | `POST /payments/sync`, `GET /payments`, `PATCH /payments/:id/classification`, `/payment-backfills` (ADMIN, [details](payment-backfills.md)) |
+| **Owned tables** | `Payment`, `SupportedAsset`, `PaymentBackfillJob` |
+| **Key files** | [`payments.service.ts`](../src/payments/payments.service.ts), [`payment-backfill.service.ts`](../src/payments/payment-backfill.service.ts) |
 | **Must not depend on** | `proofs`, `credentials`, `webhooks` |
 
 Payments are read by `proofs` but never written by it. Amounts are stored
@@ -132,8 +204,8 @@ The core domain. Issuance, verification, revocation, and anchoring intent.
 
 | | |
 |---|---|
-| **Public interface** | `/proofs/minimum-income`, `/proofs/recurring-income`, `/proofs/payment-receipt`, `GET /proofs`, `/proofs/:id/verify`, `/proofs/:id/revoke` |
-| **Owned tables** | `Proof`, `ProofClaim`, `AnchoringIntent`, `VerificationEvent` |
+| **Public interface** | `/proofs/minimum-income`, `/proofs/recurring-income`, `/proofs/payment-receipt`, `GET /proofs`, `/proofs/:id/verify`, `/proofs/:id/revoke`, `/proofs/:id/share-tokens`, `POST /proof-shares/resolve` |
+| **Owned tables** | `Proof`, `ProofClaim`, `AnchoringIntent`, `VerificationEvent`, `ProofShareToken` |
 | **Key files** | [`proofs.service.ts`](../src/proofs/proofs.service.ts), [`contract-anchoring.service.ts`](../src/proofs/contract-anchoring.service.ts) |
 | **Must not depend on** | `auth` internals, `api-keys` internals |
 
@@ -166,13 +238,19 @@ Signed outbound event delivery.
 
 | | |
 |---|---|
-| **Public interface** | `/webhooks` CRUD, delivery replay |
+| **Public interface** | `/webhooks` CRUD, delivery replay, dead-letter inspection and redrive |
 | **Owned tables** | `Webhook`, `WebhookDelivery` |
 | **Key files** | [`webhooks.service.ts`](../src/webhooks/webhooks.service.ts), [`webhook-delivery.service.ts`](../src/webhooks/webhook-delivery.service.ts), [`webhook-signing.service.ts`](../src/webhooks/webhook-signing.service.ts), [`webhook-ssrf-guard.ts`](../src/webhooks/webhook-ssrf-guard.ts) |
 | **Must not depend on** | `proofs` internals, `payments` internals |
 
 The only module that makes outbound HTTP to customer-controlled URLs, which is
 why the SSRF guard lives here.
+
+`webhook-client-certificate.service.ts` manages optional mutual TLS for
+delivery: at most one certificate is ever ACTIVE per webhook, a rotation
+demotes the outgoing one to ROTATING rather than deleting it, and
+`webhook-delivery.service.ts` refuses to fall back to a plain connection when
+mTLS is required but no valid certificate is selected.
 
 ### `jobs` — [`src/jobs/`](../src/jobs/)
 
@@ -181,8 +259,8 @@ Scheduled background work.
 | | |
 |---|---|
 | **Public interface** | none — no controller |
-| **Owned tables** | none; operates on `AnchoringIntent` |
-| **Key files** | [`anchoring-worker.service.ts`](../src/jobs/anchoring-worker.service.ts), [`anchoring-reconciler.service.ts`](../src/jobs/anchoring-reconciler.service.ts) |
+| **Owned tables** | none; operates on `AnchoringIntent` and `PaymentBackfillJob` |
+| **Key files** | [`anchoring-worker.service.ts`](../src/jobs/anchoring-worker.service.ts), [`anchoring-reconciler.service.ts`](../src/jobs/anchoring-reconciler.service.ts), [`payment-backfill-worker.service.ts`](../src/jobs/payment-backfill-worker.service.ts) |
 | **Must not depend on** | HTTP request context |
 
 Jobs have no request and therefore no user. Anything that reads
@@ -208,6 +286,17 @@ Horizon client and memo normalization. The only module that talks to Horizon.
 | | |
 |---|---|
 | **Key files** | [`stellar.service.ts`](../src/stellar/stellar.service.ts), [`memo-normalizer.ts`](../src/stellar/memo-normalizer.ts) |
+| **Must not depend on** | any domain module |
+
+### `quotas` — [`src/quotas/`](../src/quotas/)
+
+Per-organization operational quotas; see [quotas.md](quotas.md).
+
+| | |
+|---|---|
+| **Public interface** | none — enforced inside other modules' transactions; usage is served by `organizations` |
+| **Owned tables** | `OrganizationQuotaUsage` |
+| **Key files** | [`organization-quota.service.ts`](../src/quotas/organization-quota.service.ts) |
 | **Must not depend on** | any domain module |
 
 ### `common`, `config`, `database`, `health`, `trusted-sources`
@@ -317,6 +406,30 @@ them, so both must run.
 Tests: [`anchoring-worker.service.spec.ts`](../src/jobs/anchoring-worker.service.spec.ts),
 [`anchoring-reconciler.service.spec.ts`](../src/jobs/anchoring-reconciler.service.spec.ts).
 
+### Issuer address rotation
+
+```
+POST /issuers/:id/address-rotations   check revision + conflicts → open rotation → reconcile
+every 60s   IssuerAddressRotationJob: reconcile open rotations that are due
+reconcile   lease → read contract address →
+              target  → finalize (adopt address, record history)
+              source  → submit rotate_issuer_address → read again → finalize | retry
+              other   → FAILED (contract conflict)
+```
+
+The database adopts a new issuer address only after the contract is observed
+holding it, so a timeout, a failed read or a restart can delay a rotation but
+never make the database claim an unconfirmed address. Every pass starts from
+the contract's observed state, which makes retries idempotent: a submission
+that timed out after landing is finalized, not resubmitted. A request must name
+the issuer `revision` it was based on; one open rotation per issuer and per
+target address is enforced by unique indexes. Retired addresses stay in
+`IssuerAddressHistory` and cannot be registered or rotated onto again.
+
+Tests: [`issuer-address-rotation.service.spec.ts`](../src/issuers/issuer-address-rotation.service.spec.ts),
+[`issuer-address-rotation.int-spec.ts`](../test/integration/issuer-address-rotation.int-spec.ts),
+[`issuer-address-rotation.e2e-spec.ts`](../test/e2e/issuer-address-rotation.e2e-spec.ts).
+
 ### Webhook delivery
 
 ```
@@ -358,6 +471,7 @@ Each links to enforcing code and a test that fails if it regresses.
 | I23 | Error responses never leak internals — no stack, no Prisma metadata | [`global-exception.filter.ts`](../src/common/filters/global-exception.filter.ts) | [`global-exception.filter.spec.ts`](../src/common/filters/global-exception.filter.spec.ts) |
 | I24 | Every response carries a correlation ID | [`request-id.interceptor.ts`](../src/common/interceptors/request-id.interceptor.ts) | [`request-id.interceptor.spec.ts`](../src/common/interceptors/request-id.interceptor.spec.ts) |
 | I25 | The health endpoint requires no auth and exposes no internals | [`health.controller.ts`](../src/health/health.controller.ts) | [`health.authorization.spec.ts`](../src/health/health.authorization.spec.ts) |
+| I26 | A suspended, revoked or deleted account can neither use nor obtain a session | [`account-status.policy.ts`](../src/auth/account-status.policy.ts) | [`account-status.policy.spec.ts`](../src/auth/account-status.policy.spec.ts), [`users.service.spec.ts`](../src/users/users.service.spec.ts) |
 
 ### Reviewer note
 
@@ -386,15 +500,19 @@ backend being used as a proxy into its own network.
 
 **Horizon data is public but not neutral.** Memos are user-supplied. They are
 normalized in [`memo-normalizer.ts`](../src/stellar/memo-normalizer.ts) before
-anything downstream reads them.
+anything downstream reads them, and stored only in the encrypted, versioned
+form described in [payment-memos.md](payment-memos.md). Proof eligibility never
+reads them.
 
 ## Protected data
 
 | Class | Where | Handling |
 |---|---|---|
 | Session tokens | `AuthSession.tokenHash` | SHA-256 only; raw token never stored |
+| Proof share tokens | `ProofShareToken.tokenHash` | SHA-256 only; raw token returned once at issuance |
 | API keys | `ApiKey.hash` | Hashed; prefix stored separately for lookup |
 | Payment amounts | `Payment` | AES-256-GCM at rest |
+| Payment memos | `Payment.memo` | Allowlisted, byte-bounded, AES-256-GCM at rest ([details](payment-memos.md)) |
 | Wallet addresses | `User.walletHash` | Hashed for indexing |
 | Webhook secrets | `Webhook.secretEncrypted` | Encrypted |
 | Credential payloads | `Proof.signedPayload` | Signed; contains no raw payment history |

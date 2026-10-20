@@ -15,7 +15,7 @@ must never happen without approval.
 |---|---|---|---|
 | REST routes and DTOs | `src/**/dto/`, controllers | `api/v1` global prefix | Backend maintainers |
 | Credential schemas | `src/credentials/` | `earnproof.minimum-income.v1` | Backend maintainers + issuer integrations |
-| Webhook envelopes | `src/webhooks/` | `specVersion: "1"` | Backend maintainers |
+| Webhook envelopes | `src/webhooks/` | `specVersion: "1"`, per-event `schemaVersion` ([webhook-payloads.md](webhook-payloads.md)) | Backend maintainers |
 | Contract bindings | `src/stellar/` | on-chain schema version | Contract maintainers |
 
 Each surface versions **independently**. A REST change does not bump the webhook
@@ -84,7 +84,9 @@ Link: <https://docs.example.com/migrations/proof-v2>; rel="deprecation"
 
 Deprecated webhook envelopes carry the deprecation in delivery metadata, not in
 the payload body — the body is the contract under discussion, and mutating it to
-announce its own deprecation is itself a breaking change.
+announce its own deprecation is itself a breaking change. Deliveries of a
+deprecated payload `schemaVersion` send `Deprecation: true` and `Sunset:`
+headers; see [webhook-payloads.md](webhook-payloads.md).
 
 ### 3. Measure — within the privacy boundary
 

@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException } from "@nestjs/common";
+﻿import { BadRequestException, ForbiddenException } from "@nestjs/common";
 import { ApiKeyScope } from "@prisma/client";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { ApiKeysController } from "./api-keys.controller";
@@ -60,6 +60,12 @@ describe("ApiKeysController - Authorization", () => {
     };
     controller = new ApiKeysController(
       apiKeyService as never,
+      {
+        getSummary: jest.fn().mockResolvedValue([]),
+        freezeOnRevocation: jest.fn().mockResolvedValue(undefined),
+        recordUsage: jest.fn().mockResolvedValue(undefined),
+      } as never,
+      { consume: jest.fn().mockResolvedValue({ userId: 'user_1' }), issue: jest.fn().mockResolvedValue({ token: 'tok', expiresAt: new Date() }) } as never,
       prismaService as never,
     );
   });
@@ -94,12 +100,16 @@ describe("ApiKeysController - Authorization", () => {
   describe("organization authorization helper behavior", () => {
     it("infers an organization only when exactly one manageable organization exists", async () => {
       allowSingleOrganization();
-      apiKeyService.listKeysForOrganization.mockResolvedValueOnce([]);
+      apiKeyService.listKeysForOrganization.mockResolvedValueOnce({
+        data: [],
+        pageInfo: { hasMore: false, nextCursor: null },
+      });
 
       await controller.listKeys(adminUser);
 
       expect(apiKeyService.listKeysForOrganization).toHaveBeenCalledWith(
         organizationId,
+        { cursor: undefined, limit: undefined },
       );
     });
 
@@ -117,33 +127,45 @@ describe("ApiKeysController - Authorization", () => {
 
     it("checks explicit organization ownership for non-admin callers", async () => {
       allowRequestedOrganization();
-      apiKeyService.listKeysForOrganization.mockResolvedValueOnce([]);
+      apiKeyService.listKeysForOrganization.mockResolvedValueOnce({
+        data: [],
+        pageInfo: { hasMore: false, nextCursor: null },
+      });
 
       await controller.listKeys(creatorUser, { organizationId });
 
+      // Deleted organizations never resolve; archived ones are resolved so
+      // the caller can tell "archived" apart from "not yours".
       expect(prismaService.organization.findFirst).toHaveBeenCalledWith({
         where: {
           id: organizationId,
+          deletedAt: null,
           createdById: creatorUser.id,
         },
         select: {
           id: true,
+          archivedAt: true,
         },
       });
     });
 
     it("checks explicit organization existence for global admins", async () => {
       allowRequestedOrganization();
-      apiKeyService.listKeysForOrganization.mockResolvedValueOnce([]);
+      apiKeyService.listKeysForOrganization.mockResolvedValueOnce({
+        data: [],
+        pageInfo: { hasMore: false, nextCursor: null },
+      });
 
       await controller.listKeys(adminUser, { organizationId });
 
       expect(prismaService.organization.findFirst).toHaveBeenCalledWith({
         where: {
           id: organizationId,
+          deletedAt: null,
         },
         select: {
           id: true,
+          archivedAt: true,
         },
       });
     });
@@ -210,27 +232,31 @@ describe("ApiKeysController - Authorization", () => {
   describe("listKeys", () => {
     it("allows an authorized user to list API keys", async () => {
       allowSingleOrganization();
-      apiKeyService.listKeysForOrganization.mockResolvedValueOnce([
-        {
-          id: "key_1",
-          prefix: "prefix1",
-          name: "Key 1",
-          status: "ACTIVE",
-          scopeAssignments: [{ scope: ApiKeyScope.PROOF_VERIFY }],
-          createdAt: new Date("2027-01-01T00:00:00.000Z"),
-          rotatedAt: null,
-          revokedAt: null,
-          expiresAt: null,
-          lastUsedAt: null,
-        },
-      ]);
+      apiKeyService.listKeysForOrganization.mockResolvedValueOnce({
+        data: [
+          {
+            id: "key_1",
+            prefix: "prefix1",
+            name: "Key 1",
+            status: "ACTIVE",
+            scopeAssignments: [{ scope: ApiKeyScope.PROOF_VERIFY }],
+            createdAt: new Date("2027-01-01T00:00:00.000Z"),
+            rotatedAt: null,
+            revokedAt: null,
+            expiresAt: null,
+            lastUsedAt: null,
+          },
+        ],
+        pageInfo: { hasMore: false, nextCursor: null },
+      });
 
       const result = await controller.listKeys(adminUser);
 
-      expect(result).toHaveLength(1);
-      expect(result[0]?.name).toBe("Key 1");
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0]?.name).toBe("Key 1");
       expect(apiKeyService.listKeysForOrganization).toHaveBeenCalledWith(
         organizationId,
+        { cursor: undefined, limit: undefined },
       );
     });
 
@@ -319,7 +345,10 @@ describe("ApiKeysController - Authorization", () => {
     it("authorized users can execute create, list, rotate, and revoke", async () => {
       prismaService.organization.findMany.mockResolvedValue([{ id: organizationId }]);
       apiKeyService.createKey.mockResolvedValueOnce(apiKeyResponse("prefix1"));
-      apiKeyService.listKeysForOrganization.mockResolvedValueOnce([]);
+      apiKeyService.listKeysForOrganization.mockResolvedValueOnce({
+        data: [],
+        pageInfo: { hasMore: false, nextCursor: null },
+      });
       apiKeyService.rotateKey.mockResolvedValueOnce(apiKeyResponse("prefix2"));
       apiKeyService.revokeKey.mockResolvedValueOnce(undefined);
 

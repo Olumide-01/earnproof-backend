@@ -1,11 +1,23 @@
 import { Module } from "@nestjs/common";
-import { CapacitySamplerService } from "./capacity-sampler.service";
-import { CapacityTrendService } from "./capacity-trend.service";
-import { CapacityTrendController } from "./capacity-trend.controller";
+import { AuthModule } from "../auth/auth.module";
+import { Clock, SystemClock } from "../common/time/clock";
+import { MetricRollupService } from "./metric-rollup.service";
+import { MetricRollupStore, PrismaMetricRollupStore } from "./metric-rollup.store";
+import { MetricsRollupController } from "./metrics-rollup.controller";
 
+/**
+ * Downsampled operational metrics (#330). `MetricsRegistry` comes from the
+ * global ObservabilityModule and `PrismaService` from the global
+ * DatabaseModule; scheduling lives in `jobs/metrics-rollup.job.ts`.
+ */
 @Module({
-  controllers: [CapacityTrendController],
-  providers: [CapacitySamplerService, CapacityTrendService],
-  exports: [CapacitySamplerService, CapacityTrendService],
+  imports: [AuthModule],
+  controllers: [MetricsRollupController],
+  providers: [
+    MetricRollupService,
+    { provide: MetricRollupStore, useClass: PrismaMetricRollupStore },
+    { provide: Clock, useClass: SystemClock },
+  ],
+  exports: [MetricRollupService],
 })
 export class MetricsModule {}

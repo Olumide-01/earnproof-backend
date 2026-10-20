@@ -11,8 +11,20 @@ import {
   MinLength,
 } from "class-validator";
 import { FIELD_LIMITS } from "../../common/limits/request-limits";
+import { CursorPaginationQueryDto } from "../../common/pagination/pagination.dto";
 
 export class OrganizationApiKeysQueryDto {
+  @ApiPropertyOptional({
+    description:
+      "Organization to manage. Required when an administrator can manage more than one organization.",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(FIELD_LIMITS.id)
+  organizationId?: string;
+}
+
+export class ListApiKeysQueryDto extends CursorPaginationQueryDto {
   @ApiPropertyOptional({
     description:
       "Organization to manage. Required when an administrator can manage more than one organization.",

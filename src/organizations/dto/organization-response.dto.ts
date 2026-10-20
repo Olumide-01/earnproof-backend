@@ -1,5 +1,6 @@
-import { ApiProperty } from "@nestjs/swagger";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { ResourceStatus } from "@prisma/client";
+import { OrganizationLifecycleState } from "../organization-lifecycle.policy";
 
 export class OrganizationResponseDto {
   @ApiProperty({ description: "Organization unique ID" })
@@ -20,6 +21,12 @@ export class OrganizationResponseDto {
   })
   status: ResourceStatus;
 
+  @ApiProperty({
+    description:
+      "Revision number for optimistic concurrency control. Incremented on each update.",
+  })
+  revision: number;
+
   @ApiProperty({ description: "ID of user who created the organization" })
   createdById: string;
 
@@ -33,9 +40,25 @@ export class OrganizationResponseDto {
   })
   updatedAt: Date;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     description: "Number of issuers in this organization",
     type: Number,
   })
   issuerCount?: number;
+
+  @ApiProperty({
+    description:
+      "Retirement lifecycle, independent of status: LIVE, ARCHIVED (privileged operations disabled, restorable) or DELETED (tombstone).",
+    enum: OrganizationLifecycleState,
+  })
+  lifecycleState: OrganizationLifecycleState;
+
+  @ApiProperty({ description: "When the organization was archived", nullable: true, type: Date })
+  archivedAt: Date | null;
+
+  @ApiProperty({ description: "Whether a legal hold currently forbids deletion" })
+  legalHold: boolean;
+
+  @ApiProperty({ description: "When the organization was deleted", nullable: true, type: Date })
+  deletedAt: Date | null;
 }

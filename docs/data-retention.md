@@ -33,6 +33,7 @@ decision was made rather than infer it from absence.
 | `proofs` | `Proof` | An expired proof is not a deletable proof. A relying party holding a credential must be able to learn that it expired or was revoked; a proof that vanished is indistinguishable from one never issued. | Product engineering |
 | `revocation_evidence` | `Proof.revokedAt` | Revocation evidence outliving the credential is the point. Deleting it would silently restore a revoked credential to apparent validity. | Security |
 | `anchoring_state` | `AnchoringIntent` (pending and confirmed) | Confirmed intents carry the transaction hash linking a proof to the ledger. Pending intents are unfinished work. Deleting either loses the record of what was anchored, or the work itself. | Platform engineering |
+| `archived_organizations` | `Organization` (archived) | Deleting an organization revokes its credentials and anonymises its profile, and must first pass the dependency, legal-hold and minimum-archive checks. `RETENTION_ORGANIZATION_ARCHIVE_DAYS` (default 30) is the minimum time an organization stays archived, and restorable, before deletion is accepted. See [Organization lifecycle](#organization-lifecycle). | Security |
 
 Removing any of these is a deliberate, audited operation. It is not something a
 scheduled job should ever do, and the cleanup service refuses to sweep them even
@@ -146,6 +147,54 @@ What was deleted is never logged, never a metric dimension, and never included
 in an alert payload. Any metric later added to count cleanup work must follow the
 same rule: a count is an aggregate, while the identity of a deleted record is
 exactly the thing retention was meant to remove.
+
+## Organization lifecycle
+
+Organizations are retired through an explicit, administrator-only workflow
+(`src/organizations/organization-lifecycle.service.ts`), never by the sweep.
+
+```
+LIVE --archive--> ARCHIVED --delete--> DELETED
+  ^                  |
+  +-----restore------+
+```
+
+| State | How it is recorded | Effect |
+|---|---|---|
+| Live | `archivedAt` and `deletedAt` are null | Normal operation. `status` keeps its usual meaning. |
+| Archived | `archivedAt` is set | New privileged operations are refused: the organization's API keys stop authenticating; keys cannot be issued or rotated; webhooks receive no new events and queued retries are not sent; issuers cannot be registered or re-activated; attestations cannot be issued; the profile cannot change. Keys can still be listed and revoked, and issuers suspended or revoked, so the tenant can be wound down. Nothing is revoked, so **restore** is lossless. |
+| Deleted | `deletedAt` is set, `status` is `DELETED` | Terminal. API keys are revoked; webhooks, their deliveries and idempotency records are deleted; the name is replaced and the website cleared. The row survives as a tombstone and the slug stays reserved. |
+
+A **legal hold** (`legalHoldAt`, with a bounded case reference) can be placed on
+a live or archived organization. It blocks deletion only.
+
+Deletion is refused, with the blocking codes in the error, unless every check
+passes. The checks run in the same transaction as the cleanup, after the
+organization row and its issuers are locked:
+
+| Blocker | Meaning |
+|---|---|
+| `NOT_ARCHIVED` | Deletion is only accepted from the archived state. |
+| `ARCHIVE_RETENTION_PERIOD` | The organization has been archived for less than `RETENTION_ORGANIZATION_ARCHIVE_DAYS` (default 30). The boundary is exclusive, like every other class. |
+| `LEGAL_HOLD` | A legal hold is in place. |
+| `ACTIVE_ISSUERS` | Issuers are still `PENDING` or `ACTIVE`; suspend or revoke them first. |
+| `ISSUER_REGISTRY_OUT_OF_SYNC` | An issuer was retired locally but its last confirmed on-chain status is still `ACTIVE`; synchronise the registry first. |
+
+`GET /organizations/:id/deletion-eligibility` reports the same blockers as codes
+with counts, never as identifiers.
+
+**What deletion keeps.** Issuers, attestations, proofs and audit records are
+not removed. A proof issued while the organization was live still verifies
+after deletion, and an attestation stays resolvable through its issuer. Audit
+records keep their own retention class (`audit_logs`); deleting an organization
+does not shorten it.
+
+## Audit legal holds
+
+Audit records covered by an approved (or pending) legal hold are excluded from
+the `audit_logs` sweep and its dry run until the hold is released, rejected or
+expires. If holds cannot be read, audit cleanup fails closed for that run. See
+[audit-legal-holds.md](audit-legal-holds.md).
 
 ## Test coverage
 

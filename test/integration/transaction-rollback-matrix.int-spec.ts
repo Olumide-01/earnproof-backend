@@ -221,8 +221,8 @@ describe("retry after rollback — proof revocation (conditional outbox row)", (
     });
 
     await retryAfterFailure({
-      failingAttempt: () => proofs().revokeProof(stranger.id, proof.id),
-      retryAttempt: () => proofs().revokeProof(owner.id, proof.id),
+      failingAttempt: () => proofs().revokeProof(stranger, proof.id),
+      retryAttempt: () => proofs().revokeProof(owner, proof.id),
       baselineCount: 0,
       countAfterFailure: () =>
         db.prisma.anchoringIntent.count({ where: { proofId: proof.id } }),
@@ -248,7 +248,7 @@ describe("retry after rollback — proof revocation (conditional outbox row)", (
       contractTransactionHash: "deadbeefTXHASH",
     });
 
-    await proofs().revokeProof(owner.id, proof.id);
+    await proofs().revokeProof(owner, proof.id);
     expect(
       await db.prisma.anchoringIntent.count({ where: { proofId: proof.id } }),
     ).toBe(1);
@@ -257,7 +257,7 @@ describe("retry after rollback — proof revocation (conditional outbox row)", (
     // regardless of whether the service treats it as a no-op or an error —
     // either way, exactly one outbox row must exist afterward.
     await proofs()
-      .revokeProof(owner.id, proof.id)
+      .revokeProof(owner, proof.id)
       .catch(() => undefined);
 
     expect(
@@ -373,7 +373,7 @@ describe("no success signal for a rolled-back operation", () => {
     });
 
     const outcome = await proofs()
-      .revokeProof(stranger.id, proof.id)
+      .revokeProof(stranger, proof.id)
       .then((value) => ({ ok: true as const, value }))
       .catch((error: unknown) => ({ ok: false as const, error }));
 

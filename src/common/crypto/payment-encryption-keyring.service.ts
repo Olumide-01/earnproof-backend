@@ -1,5 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { PaymentAddressCipher } from "./payment-address-cipher";
+import { deriveAddressKeys } from "./protected-address";
 import {
   ProtectedAmountKeyring,
   decryptProtectedAmount,
@@ -111,5 +113,19 @@ export class PaymentEncryptionKeyringService {
 
   decrypt(value: string): string {
     return decryptProtectedAmount(value, this.keyring);
+  }
+
+  private cachedAddressCipher?: PaymentAddressCipher;
+
+  /**
+   * Payment-address protection on the same keyring and active version.
+   * Address keys are derived per purpose, never the amount key itself.
+   */
+  addressCipher(): PaymentAddressCipher {
+    this.cachedAddressCipher ??= new PaymentAddressCipher(
+      deriveAddressKeys(this.keyring),
+      this.activeWriteVersion,
+    );
+    return this.cachedAddressCipher;
   }
 }

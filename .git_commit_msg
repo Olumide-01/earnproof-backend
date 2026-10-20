@@ -1,0 +1,11 @@
+docs(integrations): add API key authentication guide
+
+- Add comprehensive API key integration guide (docs/api-keys-guide.md)
+- Covers full key lifecycle: create, use, rotate, revoke
+- Documents all scopes and permissions with enforcement details
+- Includes rate limiting configuration and headers
+- Provides security best practices and code examples (Python, Node.js, cURL)
+- Explains troubleshooting and incident response
+- Update README to reflect API keys are production-ready
+
+Closes #91

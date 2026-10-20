@@ -114,6 +114,43 @@ export async function seedPayment(
   return { row, amount: payment.amount };
 }
 
+/**
+ * Seeds an ACTIVE SupportedAsset row for the "testnet" network (the
+ * integration environment's configured `STELLAR_NETWORK`).
+ *
+ * Proof issuance re-validates asset eligibility against this live registry
+ * inside the write transaction, so any integration test that issues a proof
+ * for a given asset must seed a matching row here first.
+ */
+export async function seedSupportedAsset(
+  prisma: PrismaClient,
+  seed: string | number,
+  overrides: { code: string; issuer?: string | null; status?: string } = {
+    code: "USDC",
+  },
+) {
+  const code = overrides.code;
+  const issuer = overrides.issuer ?? null;
+  const status = overrides.status ?? "ACTIVE";
+  const assetKey = `testnet:${issuer ? "issued" : "native"}:${code}${
+    issuer ? `:${issuer}` : ""
+  }:${seed}`;
+
+  return prisma.supportedAsset.upsert({
+    where: { assetKey },
+    create: {
+      assetKey,
+      code,
+      issuer,
+      network: "testnet",
+      status: status as never,
+    },
+    update: {
+      status: status as never,
+    },
+  });
+}
+
 export async function seedProof(
   prisma: PrismaClient,
   seed: string | number,

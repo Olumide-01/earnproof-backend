@@ -71,6 +71,49 @@ running. Check `job_runs_total` for the process generally.
 | Dispatcher not running | Restart; confirm attempts resume. |
 | Many endpoints timing out | Check our own egress before concluding it is theirs. |
 
+## Dead letters and redrive
+
+A delivery chain that ends without success is **dead-lettered**: its terminal
+attempt keeps `status = FAILED` and gains `deadLetteredAt` plus a stable
+`deadLetterReason`. Automatic retries stop there.
+
+| `deadLetterReason` | Meaning | Redrive? |
+|---|---|---|
+| `max_attempts_exhausted` | `WEBHOOK_MAX_DELIVERY_ATTEMPTS` (default 5) attempts all failed | Yes, once the endpoint is healthy |
+| `destination_blocked` | SSRF guard refused the URL | Only after the URL is fixed; it will be blocked again otherwise |
+| `signing_secret_unavailable` | Secret could not be decrypted | Fix the key or rotate the secret first |
+| `endpoint_disabled` | Endpoint disabled or deleted before dispatch | After re-enable; deleted endpoints cannot be redriven |
+
+Operators are users with the `DEVELOPER` or `ADMIN` role, acting on their own
+organisation only. Another organisation's deliveries are reported as not found.
+
+```
+GET  /api/v1/webhooks/dead-letters?state=pending&webhookId=…   # list
+GET  /api/v1/webhooks/dead-letters/:deliveryId                 # detail + attempt history
+POST /api/v1/webhooks/dead-letters/:deliveryId/redrive         # {"reason": "…"}
+POST /api/v1/webhooks/dead-letters/redrive                     # {"deliveryIds": […], "reason": "…"}
+```
+
+- **A reason is mandatory** (10–500 characters). It is stored on the new
+  delivery and in the `webhook.delivery.redriven` audit entry.
+- **Redrive never re-sends or edits the dead letter.** It creates a new
+  delivery with the same event `id`, `schemaVersion`, and payload bytes and a
+  fresh retry chain; the dead letter only gains `redrivenAt`/`redrivenBy`.
+  Integrators deduplicate on the unchanged event id.
+- **Idempotent and concurrency-safe.** Each dead letter can be redriven once.
+  Repeats and concurrent attempts return `already_redriven` with the same
+  redrive delivery id. If the redrive itself dead-letters, redrive that new
+  dead letter.
+- **Batches are bounded** by `WEBHOOK_REDRIVE_MAX_BATCH` (default 25, hard
+  ceiling 100). Items are processed independently; each result carries an
+  outcome: `redriven`, `already_redriven`, `not_found`, `not_dead_lettered`,
+  `webhook_disabled`, `webhook_deleted`.
+- Disabled endpoints are refused (`webhook_disabled`) without consuming the
+  dead letter, so it can be redriven after re-enable.
+- Dead letters are retained like every delivery row
+  (`RETENTION_WEBHOOK_DELIVERY_DAYS`, default 30 days) — redrive decisions must
+  be made inside that window.
+
 ## Verify
 
 - Failure rate back under 5%, held for 15 minutes.
@@ -83,5 +126,6 @@ running. Check `job_runs_total` for the process generally.
 
 - Failure rate above 25%, which implies a systemic cause.
 - Signing is implicated — every integration is affected simultaneously.
-- Deliveries have exhausted their retries, so recovery needs a replay decision.
+- Deliveries have been dead-lettered, so recovery needs a redrive decision
+  (see [Dead letters and redrive](#dead-letters-and-redrive)).
 - A customer escalates about missed events during the window.

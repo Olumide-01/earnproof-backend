@@ -30,6 +30,9 @@ function build(
     transport,
     sleep: clock.sleep,
     backoffMs: 200,
+    // Pin jitter to the top of its range so the exponential schedule is exact
+    // and assertable; the jitter itself is exercised in its own unit test.
+    random: () => 1,
   });
   return { client, transport, clock };
 }
@@ -256,6 +259,27 @@ describe("retry classification", () => {
     expect(result.payments).toHaveLength(4);
     // 200ms then 400ms: the budget is per page, and page two used both retries.
     expect(clock.delays).toEqual([200, 400]);
+  });
+
+  it("jitters the exponential backoff below its deterministic ceiling", async () => {
+    // A random source pinned to its midpoint yields exactly half of each cap,
+    // demonstrating that the delay is a jittered fraction of the exponential
+    // schedule rather than the schedule itself — the property that stops every
+    // worker retrying on the same tick.
+    const transport = new ScriptedHorizonTransport("server-error-mid-walk");
+    const clock = new RecordingSleep();
+    const client = new HorizonClient({
+      horizonUrl: fixtures.horizonUrl,
+      transport,
+      sleep: clock.sleep,
+      backoffMs: 200,
+      random: () => 0.5,
+    });
+
+    await client.listIncomingPayments(ACCOUNT, { pageLimit: 2 });
+
+    // Half of the 200/400 ceilings.
+    expect(clock.delays).toEqual([100, 200]);
   });
 
   it("retries a connection failure", async () => {

@@ -1,6 +1,7 @@
-import { HttpException, HttpStatus, Injectable, Logger } from "@nestjs/common";
+import { HttpException, HttpStatus, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { AuthEventType } from "@prisma/client";
+import { StructuredLogger } from "../common/logger";
 import { AuthAuditService } from "./auth-audit.service";
 
 export interface RateLimitConfig {
@@ -48,7 +49,7 @@ class TooManyRequestsException extends HttpException {
  */
 @Injectable()
 export class AuthRateLimiterService {
-  private readonly logger = new Logger(AuthRateLimiterService.name);
+  private readonly logger = new StructuredLogger(AuthRateLimiterService.name);
   private readonly config: RateLimitConfig;
 
   constructor(
@@ -94,9 +95,10 @@ export class AuthRateLimiterService {
       );
 
       if (walletCount >= this.config.maxChallengeCreations) {
-        this.logger.warn(
-          `Challenge creation rate limit exceeded for wallet (${walletCount} requests)`,
-        );
+        this.logger.warn("Challenge creation rate limit exceeded", {
+          walletCount,
+          limit: this.config.maxChallengeCreations,
+        });
 
         // Record the rate limit event
         await this.auditService.recordEvent(
@@ -124,9 +126,10 @@ export class AuthRateLimiterService {
         );
 
         if (clientCount >= this.config.maxChallengeCreations) {
-          this.logger.warn(
-            `Challenge creation rate limit exceeded for client (${clientCount} requests)`,
-          );
+          this.logger.warn("Client challenge creation rate limit exceeded", {
+            clientCount,
+            limit: this.config.maxChallengeCreations,
+          });
 
           await this.auditService.recordEvent(
             AuthEventType.RATE_LIMITED,
@@ -151,11 +154,7 @@ export class AuthRateLimiterService {
       }
 
       // Otherwise, fail open: log the error but allow the operation
-      this.logger.error(
-        `Rate limit check failed, allowing operation: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+      this.logger.error("Rate limit check failed, allowing operation", error);
     }
   }
 
@@ -180,9 +179,10 @@ export class AuthRateLimiterService {
       );
 
       if (walletCount >= this.config.maxVerifications) {
-        this.logger.warn(
-          `Verification rate limit exceeded for wallet (${walletCount} attempts)`,
-        );
+        this.logger.warn("Verification rate limit exceeded", {
+          walletCount,
+          limit: this.config.maxVerifications,
+        });
 
         await this.auditService.recordEvent(
           AuthEventType.RATE_LIMITED,
@@ -209,9 +209,10 @@ export class AuthRateLimiterService {
         );
 
         if (clientCount >= this.config.maxVerifications) {
-          this.logger.warn(
-            `Verification rate limit exceeded for client (${clientCount} attempts)`,
-          );
+          this.logger.warn("Client verification rate limit exceeded", {
+            clientCount,
+            limit: this.config.maxVerifications,
+          });
 
           await this.auditService.recordEvent(
             AuthEventType.RATE_LIMITED,
@@ -236,11 +237,7 @@ export class AuthRateLimiterService {
       }
 
       // Otherwise, fail open
-      this.logger.error(
-        `Rate limit check failed, allowing operation: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+      this.logger.error("Rate limit check failed, allowing operation", error);
     }
   }
 

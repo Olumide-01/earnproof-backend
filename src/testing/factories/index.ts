@@ -10,6 +10,13 @@ import {
   syntheticWalletAddress,
   syntheticWalletHash,
 } from "./synthetic";
+import {
+  ASSESSMENT_VERSION,
+  CompatibilityFinding,
+  FindingSeverity,
+  CheckKind,
+  SignedArtifact,
+} from "../../contracts/assessment-types";
 
 /**
  * Intent-based factories for test and demo data.
@@ -542,71 +549,145 @@ export function pendingAnchoringIntent(
 
 export * from "./synthetic";
 
+
 // ---------------------------------------------------------------------------
-// Capacity Samples
+// Credential Verification Key Trust Pins
 // ---------------------------------------------------------------------------
 
-import {
-  CapacitySample,
-  ResourceType,
-  ResourceTypeValue,
-  CAPACITY_SAMPLE_VERSION,
-} from "../../metrics/capacity-types";
-import { sha256 } from "../../common/crypto/hash";
-import { canonicalize } from "../../common/crypto/canonicalize";
-
-export interface CapacitySampleInput {
-  resourceType: ResourceTypeValue;
-  count: number;
-  sampleHash: string;
-  sampledAt: Date;
-}
-
-/** Build a synthetic capacity sample with a deterministic hash. */
-export function buildCapacitySample(
-  seed: string | number,
-  resourceType: ResourceTypeValue = ResourceType.PROOF,
-  count = 100,
-  overrides: Partial<CapacitySampleInput> = {},
-): CapacitySampleInput {
-  const sampledAt = new Date("2025-01-01T12:00:00.000Z");
-  const body = {
-    version: CAPACITY_SAMPLE_VERSION,
-    resourceType,
-    count,
-    sampledAt: sampledAt.toISOString(),
+export interface CredentialVerificationKeyTrustPinInput {
+  id: string;
+  organizationId: string;
+  issuerId: string;
+  network: string;
+  keyId: string;
+  trustedKeySnapshot: {
+    alg: "EdDSA";
+    crv: "Ed25519";
+    kid: string;
+    kty: "OKP";
+    x: string;
+    use: "sig";
+    status: "active" | "retired";
   };
-  const sampleHash = `sha256:${sha256(canonicalize(body))}-synthetic-${String(seed)}`;
-  return { resourceType, count, sampleHash, sampledAt, ...overrides };
+  effectiveAt: Date;
+  expiresAt: Date | null;
+  status: "ACTIVE" | "RETIRED" | "REVOKED";
+  decisionMetadata?: {
+    decidedBy: string;
+    reason?: string;
+    context?: Record<string, unknown>;
+  };
+  revision: number;
+  revokedAt: Date | null;
+  revokedBy: string | null;
+  revocationReason: string | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
-/** A series of synthetic samples with linearly increasing counts. */
-export function buildCapacitySeries(
-  resourceType: ResourceTypeValue,
-  sampleCount: number,
-  baseCount: number,
-  ratePerDay: number,
-): CapacitySample[] {
-  const series: CapacitySample[] = [];
-  for (let i = 0; i < sampleCount; i++) {
-    const daysOffset = i;
-    const sampledAt = new Date(
-      new Date("2025-01-01T00:00:00.000Z").getTime() +
-        daysOffset * 24 * 60 * 60 * 1_000,
-    );
-    const count = Math.floor(baseCount + ratePerDay * daysOffset);
-    const body = {
-      version: CAPACITY_SAMPLE_VERSION,
-      resourceType,
-      count,
-      sampledAt: sampledAt.toISOString(),
-    };
-    series.push({
-      resourceType,
-      count,
-      sampleHash: `sha256:${sha256(canonicalize(body))}-series-${i}`,
-      sampledAt,
-    });
-  }
-  return series;
+/** Base trust pin factory. */
+export function buildTrustPin(
+  seed: string | number,
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  const seedStr = String(seed);
+  return {
+    id: syntheticId("trust_pin", seed),
+    organizationId,
+    issuerId,
+    network: "testnet",
+    keyId: `key-${seedStr}`,
+    trustedKeySnapshot: {
+      alg: "EdDSA",
+      crv: "Ed25519",
+      kid: `key-${seedStr}`,
+      kty: "OKP",
+      x: syntheticSecret(seed).substring(0, 43), // base64url encoded public key material
+      use: "sig",
+      status: "active",
+    },
+    effectiveAt: syntheticDate(-30),
+    expiresAt: syntheticDate(90),
+    status: "ACTIVE",
+    decisionMetadata: {
+      decidedBy: syntheticId("user", seed),
+      reason: "Initial trust pin",
+    },
+    revision: 0,
+    revokedAt: null,
+    revokedBy: null,
+    revocationReason: null,
+    createdAt: syntheticDate(-30),
+    updatedAt: syntheticDate(-30),
+    ...overrides,
+  };
+}
+
+/** An active trust pin for a key. */
+export function activeTrustPin(
+  seed: string | number,
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  return buildTrustPin(seed, organizationId, issuerId, {
+    status: "ACTIVE",
+    effectiveAt: syntheticDate(-30),
+    expiresAt: syntheticDate(90),
+    revokedAt: null,
+    ...overrides,
+  });
+}
+
+/** A retired trust pin (superseded by a new one). */
+export function retiredTrustPin(
+  seed: string | number,
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  return buildTrustPin(seed, organizationId, issuerId, {
+    status: "RETIRED",
+    effectiveAt: syntheticDate(-60),
+    expiresAt: syntheticDate(0),
+    revokedAt: null,
+    updatedAt: syntheticDate(-10),
+    revision: 1,
+    ...overrides,
+  });
+}
+
+/** A revoked trust pin (due to key compromise). */
+export function revokedTrustPin(
+  seed: string | number,
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  return buildTrustPin(seed, organizationId, issuerId, {
+    status: "REVOKED",
+    revokedAt: syntheticDate(-5),
+    revokedBy: syntheticId("user", "admin"),
+    revocationReason: "Key compromise detected",
+    updatedAt: syntheticDate(-5),
+    revision: 1,
+    ...overrides,
+  });
+}
+
+/** An expired trust pin (past its expiresAt date). */
+export function expiredTrustPin(
+  seed: string | number,
+  organizationId: string,
+  issuerId: string,
+  overrides: Partial<CredentialVerificationKeyTrustPinInput> = {},
+): CredentialVerificationKeyTrustPinInput {
+  return buildTrustPin(seed, organizationId, issuerId, {
+    status: "ACTIVE",
+    effectiveAt: syntheticDate(-60),
+    expiresAt: syntheticDate(-5), // Already expired
+    ...overrides,
+  });
 }

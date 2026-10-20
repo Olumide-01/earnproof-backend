@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import { APP_GUARD } from "@nestjs/core";
 import { ThrottlerModule } from "@nestjs/throttler";
 import { AuthModule } from "../../auth/auth.module";
+import { ApiKeysModule } from "../../api-keys/api-keys.module";
 import { RoleAwareThrottlerGuard } from "../guards/rate-limit.guard";
 
 /**
@@ -28,11 +29,18 @@ import { RoleAwareThrottlerGuard } from "../guards/rate-limit.guard";
  * via `@SkipThrottle()` directly on `HealthController` rather than a
  * blanket path exclusion here, so the exemption is visible right next to
  * the route it applies to.
+ *
+ * API Key Quota Integration:
+ * The quota guard works alongside this rate limiting system:
+ * - Global rate limits apply to all requests (IP-based for anonymous, user-based for session auth)
+ * - API key quotas apply per-scope limits on top of global limits
+ * - Both must pass for a request to proceed
  */
 @Module({
   imports: [
     ConfigModule,
     AuthModule,
+    ApiKeysModule, // Import for quota integration
     ThrottlerModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

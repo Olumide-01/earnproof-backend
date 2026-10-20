@@ -91,6 +91,7 @@ describe("audit taxonomy", () => {
     ).map((event) => event.type);
 
     expect(failOpen.sort()).toEqual([
+      "authentication.account_inactive",
       "authentication.challenge_created",
       "authentication.challenge_expired",
       "authentication.challenge_replayed",

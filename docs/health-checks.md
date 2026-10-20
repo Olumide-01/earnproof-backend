@@ -38,6 +38,10 @@ Required dependencies (these gate the verdict):
 - `database` — a `SELECT 1` round-trip.
 - `configuration` — presence of `databaseUrl`, `sessionSecret`, and
   `credentialSigningSecret`.
+- `clock_skew` — present unless `CLOCK_SKEW_READINESS_IMPACT=none`. Fails only
+  while a **sustained** critical clock skew alert is active, never on a single
+  measurement. Reason code only; the measured skew is diagnostics detail. See
+  [clock-skew.md](clock-skew.md).
 
 Optional dependencies are **not consulted by readiness at all**. Horizon, contract
 anchoring, and webhook delivery appear only in diagnostics. Marking an optional
@@ -131,6 +135,7 @@ poll rate produces precisely the overload the probe was meant to detect.
 |---|---|---|
 | `HEALTH_PROBE_TIMEOUT_MS` | `2000` | Per-probe timeout. Keep below the orchestrator's probe timeout. |
 | `HEALTH_CACHE_TTL_MS` | `5000` | How long a probe result is reused. |
+| `CLOCK_SKEW_*` | see [clock-skew.md](clock-skew.md) | Clock skew thresholds, unknown-time policy and readiness impact. |
 
 ## Backwards compatibility
 
