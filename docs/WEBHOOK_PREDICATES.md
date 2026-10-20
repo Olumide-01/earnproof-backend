@@ -299,7 +299,7 @@ Subscriptions created before predicates are supported have `predicate = NULL`:
 
 ### Migration File
 
-`prisma/migrations/20260101100000_add_webhook_predicates/migration.sql`
+`prisma/migrations/20261017010545_add_webhook_predicates/migration.sql`
 
 ---
 
@@ -430,7 +430,7 @@ All future changes will require a new `predicateVersion` and separate validation
 
 - **Issue #323**: Add bounded webhook subscription predicates
 - **Design artifact**: `docs/WEBHOOK_PREDICATES.md` (this document)
-- **Migration**: `prisma/migrations/20260101100000_add_webhook_predicates/migration.sql`
+- **Migration**: `prisma/migrations/20261017010545_add_webhook_predicates/migration.sql`
 - **Validator**: `src/webhooks/validation/predicate.validators.ts`
 - **Evaluator**: `src/webhooks/services/predicate-evaluator.service.ts`
 - **Preview service**: `src/webhooks/services/predicate-preview.service.ts`
