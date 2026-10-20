@@ -490,6 +490,7 @@ model Organization {
   credentialQuarantineAudits CredentialQuarantineAudit[] @relation("quarantine_audit_org")
   roleApprovalPolicies OrganizationRoleApprovalPolicy[]
   auditLegalHolds      AuditLegalHold[]
+  secretRetrievalReceipts SecretRetrievalReceipt[]
 
   @@index([status])
   @@index([archivedAt])
@@ -923,7 +924,6 @@ model Proof {
   disclosureReceipts      DisclosureReceipt[]
   disputes                ProofDispute[]
   expirationReminderDeliveries ProofExpirationReminderDelivery[]
-  verificationProvenances      VerificationProvenance[]
 
   @@index([userId, status])
   @@index([userId, createdAt, id])
@@ -1132,7 +1132,7 @@ model VerificationProvenance {
   /// Timestamp when decision was made
   decidedAt     DateTime  @default(now())
   createdAt     DateTime  @default(now())
-  verificationProvenanceSources VerificationProvenanceSource[]
+
 
   @@unique([proofId, decidedAt])
   @@index([proofId, createdAt])
@@ -1199,6 +1199,7 @@ model ApiKey {
   @@index([organizationId, status])
   @@index([prefix])
   @@index([organizationId, createdAt, id])
+  @@index([status, expiresAt])
 }
 
 model ApiKeyScopeAssignment {
@@ -1208,6 +1209,32 @@ model ApiKeyScopeAssignment {
   scope    ApiKeyScope
 
   @@unique([apiKeyId, scope])
+}
+
+model SecretRetrievalReceipt {
+  id                  String       @id @default(cuid())
+  organizationId      String
+  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  secretType          String
+  resourceId          String
+  resourceReference   String?
+  recipientId         String?
+  deliveryChannel     String       @default("http_response")
+  revealedAt          DateTime
+  acknowledgementHash String
+  status              String       @default("ACTIVE")
+  expiresAt           DateTime?
+  metadata            Json         @default("{}")
+  hashVersion         Int          @default(1)
+  prevHash            String?
+  hash                String
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  @@unique([organizationId, resourceId, secretType, revealedAt])
+  @@index([organizationId, secretType, resourceId])
+  @@index([organizationId, status, expiresAt])
+  @@index([organizationId, createdAt])
 }
 
 enum WebhookSecretState {
@@ -1235,6 +1262,7 @@ model Webhook {
   circuitBreaker     WebhookCircuit?
   secretVersions     WebhookSecretVersion[]
   tlsProbes          WebhookTlsProbe[]
+  verificationChallenges WebhookVerificationChallenge[]
 
   @@index([organizationId, status])
   @@index([organizationId, createdAt, id])
@@ -2550,7 +2578,6 @@ model ApprovalIntentReceipt {
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
 
-  @@unique([approvalRequestId])
   @@index([schemaVersion])
   @@index([signingKeyId])
   @@index([issuedAt])

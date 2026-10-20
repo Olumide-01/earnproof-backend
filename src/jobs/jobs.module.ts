@@ -32,6 +32,7 @@ import { BulkAdminService } from "./bulk-admin/bulk-admin.service";
 import { BulkAdminController } from "./bulk-admin/bulk-admin.controller";
 import { MetricsModule } from "../metrics/metrics.module";
 import { MetricsRollupJob } from "./metrics-rollup.job";
+import { ApiKeyExpirationJob } from "./api-key-expiration.job";
 
 @Module({
   imports: [
@@ -44,9 +45,13 @@ import { MetricsRollupJob } from "./metrics-rollup.job";
     ApiKeysModule,
     MetricsModule,
   ],
-  controllers: [JobExecutionController, RevocationPropagationController],
-  controllers: [JobExecutionController, BulkAdminController],
+  controllers: [
+    JobExecutionController,
+    RevocationPropagationController,
+    BulkAdminController,
+  ],
   providers: [
+    ApiKeyExpirationJob,
     ContractAnchoringService,
     AnchoringWorkerService,
     PaymentBackfillWorkerService,
@@ -84,6 +89,7 @@ import { MetricsRollupJob } from "./metrics-rollup.job";
     JobExecutionService,
     RevocationPropagationReconcilerService,
     BulkAdminService,
+    ApiKeyExpirationJob,
   ],
 })
 export class JobsModule {}

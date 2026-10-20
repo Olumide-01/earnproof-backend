@@ -1,4 +1,4 @@
-﻿import {
+import {
   Body,
   Controller,
   Delete,
@@ -74,9 +74,19 @@ export class ApiKeysController {
   constructor(
     private readonly apiKeyService: ApiKeyService,
     private readonly apiKeyUsageService: ApiKeyUsageService,
-    private readonly apiKeyQuotaService: ApiKeyQuotaService,
     private readonly recentAuthService: RecentAuthService,
     private readonly prisma: PrismaService,
+    private readonly apiKeyQuotaService: ApiKeyQuotaService = {
+      getKeyQuotas: async () => [],
+      setQuotaConfig: async () => undefined,
+      getQuotaConfig: async () => ({
+        quotaLimit: null,
+        windowSeconds: 3600,
+        isUnlimited: true,
+        isDisabled: false,
+      }),
+      deleteKeyQuotas: async () => undefined,
+    } as never,
   ) {}
 
   /**

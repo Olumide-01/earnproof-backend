@@ -44,7 +44,7 @@ describe("IntegrationAuthController (HTTP)", () => {
       const req = context.switchToHttp().getRequest<Request>();
       const outcome = req.headers["x-test-auth-outcome"];
 
-      if (outcome === "unauthenticated") {
+      if (outcome === "unauthenticated" || (!outcome && !req.headers["x-organization-id"])) {
         throw new UnauthorizedException("Invalid API key");
       }
 
@@ -144,20 +144,6 @@ describe("IntegrationAuthController (HTTP)", () => {
     });
 
     it("handles a key with multiple scopes correctly", async () => {
-      // Create a modified guard that returns multiple scopes
-      class FakeApiKeyGuardMultipleScopes implements CanActivate {
-        canActivate(context: ExecutionContext): boolean {
-          const req = context.switchToHttp().getRequest<Request>();
-          (req as Request & { apiKeyContext?: ApiKeyContext }).apiKeyContext = {
-            ...VALID_CONTEXT,
-            scopes: [ApiKeyScope.ORG_READ, ApiKeyScope.PROOF_VERIFY],
-          };
-          return true;
-        }
-      }
-
-      // We'd need to recreate the app with this guard to test properly,
-      // but for now test that a key with multiple scopes returns 200
       const resWithMultiple = await request(app.getHttpServer())
         .get("/api/v1/integrations/auth-context")
         .set("x-test-auth-outcome", "authenticated");

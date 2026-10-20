@@ -1,4 +1,4 @@
-﻿import {
+import {
   CanActivate,
   ExecutionContext,
   Injectable,
@@ -71,7 +71,7 @@ export class ApiKeyGuard implements CanActivate {
         keyId: apiKey.id,
         prefix: apiKey.prefix,
         organizationId: apiKey.organizationId,
-        scopes: apiKey.scopeAssignments.map((sa) => sa.scope),
+        scopes: (apiKey.scopeAssignments ?? []).map((sa: { scope: any }) => sa.scope),
         createdAt: apiKey.createdAt,
       };
 
