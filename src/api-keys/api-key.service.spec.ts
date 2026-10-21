@@ -1,4 +1,4 @@
-﻿import { ApiKeyScope, ResourceStatus } from "@prisma/client";
+import { ApiKeyScope, ResourceStatus } from "@prisma/client";
 import { ApiKeyService } from "./api-key.service";
 import { unlimitedQuotas } from "../testing/quotas";
 
@@ -26,11 +26,14 @@ describe("ApiKeyService", () => {
 
   beforeEach(() => {
     prismaService = mockPrisma();
-    service = new ApiKeyService(prismaService, unlimitedQuotas() as never);
-    service = new ApiKeyService(prismaService, {
-      freezeOnRevocation: jest.fn().mockResolvedValue(undefined),
-      recordUsage: jest.fn().mockResolvedValue(undefined),
-    } as never);
+    service = new ApiKeyService(
+      prismaService,
+      unlimitedQuotas() as never,
+      {
+        freezeOnRevocation: jest.fn().mockResolvedValue(undefined),
+        recordUsage: jest.fn().mockResolvedValue(undefined),
+      } as never,
+    );
   });
 
   describe("generateSecret", () => {
@@ -1032,6 +1035,300 @@ describe("ApiKeyService", () => {
           expect(auditStr).not.toContain(capturedSecret);
         }
       }
+    });
+  });
+
+  describe("expiration, cache invalidation, and rotation overlap boundaries", () => {
+    const fixedNow = new Date("2026-10-20T12:00:00Z");
+
+    beforeEach(() => {
+      prismaService.$queryRaw = jest.fn().mockResolvedValue([{ now: fixedNow }]);
+    });
+
+    describe("exact clock boundaries", () => {
+      it("authenticates when now < expiresAt", async () => {
+        const { secret, prefix } = service.generateSecret();
+        const keyHash = service.hashSecret(secret);
+        const expiresAt = new Date("2026-10-20T12:00:01Z"); // 1s in the future
+
+        prismaService.apiKey.findFirst.mockResolvedValueOnce({
+          id: "key_future",
+          prefix,
+          organizationId: "org_1",
+          status: ResourceStatus.ACTIVE,
+          expiresAt,
+          keyHash,
+          scopeAssignments: [],
+          organization: { id: "org_1", slug: "org-1" },
+        });
+
+        const key = await service.lookupAndVerifyKey(prefix, secret, "org_1");
+        expect(key).not.toBeNull();
+        expect(key?.id).toBe("key_future");
+      });
+
+      it("rejects at exact expiration boundary when now === expiresAt", async () => {
+        const { secret, prefix } = service.generateSecret();
+        const keyHash = service.hashSecret(secret);
+        const expiresAt = new Date("2026-10-20T12:00:00Z"); // exact boundary
+
+        prismaService.apiKey.findFirst.mockResolvedValueOnce({
+          id: "key_exact",
+          prefix,
+          organizationId: "org_1",
+          status: ResourceStatus.ACTIVE,
+          expiresAt,
+          keyHash,
+          scopeAssignments: [],
+          organization: { id: "org_1", slug: "org-1" },
+        });
+
+        const key = await service.lookupAndVerifyKey(prefix, secret, "org_1");
+        expect(key).toBeNull();
+      });
+
+      it("rejects when now > expiresAt", async () => {
+        const { secret, prefix } = service.generateSecret();
+        const keyHash = service.hashSecret(secret);
+        const expiresAt = new Date("2026-10-20T11:59:59Z"); // 1s in the past
+
+        prismaService.apiKey.findFirst.mockResolvedValueOnce({
+          id: "key_past",
+          prefix,
+          organizationId: "org_1",
+          status: ResourceStatus.ACTIVE,
+          expiresAt,
+          keyHash,
+          scopeAssignments: [],
+          organization: { id: "org_1", slug: "org-1" },
+        });
+
+        const key = await service.lookupAndVerifyKey(prefix, secret, "org_1");
+        expect(key).toBeNull();
+      });
+    });
+
+    describe("cache invalidation", () => {
+      it("caches key on successful lookup and invalidates on invalidateKeyCache(keyId)", async () => {
+        const { secret, prefix } = service.generateSecret();
+        const keyHash = service.hashSecret(secret);
+
+        prismaService.apiKey.findFirst.mockResolvedValueOnce({
+          id: "key_cached",
+          prefix,
+          organizationId: "org_1",
+          status: ResourceStatus.ACTIVE,
+          expiresAt: null,
+          keyHash,
+          scopeAssignments: [],
+          organization: { id: "org_1", slug: "org-1" },
+        });
+
+        // 1st lookup queries DB and stores in cache
+        const key1 = await service.lookupAndVerifyKey(prefix, secret, "org_1");
+        expect(key1).not.toBeNull();
+        expect(prismaService.apiKey.findFirst).toHaveBeenCalledTimes(1);
+
+        // 2nd lookup hits cache, DB is NOT called again
+        const key2 = await service.lookupAndVerifyKey(prefix, secret, "org_1");
+        expect(key2).not.toBeNull();
+        expect(prismaService.apiKey.findFirst).toHaveBeenCalledTimes(1);
+
+        // Invalidate specific key
+        service.invalidateKeyCache("key_cached");
+
+        // 3rd lookup misses cache and queries DB again
+        prismaService.apiKey.findFirst.mockResolvedValueOnce({
+          id: "key_cached",
+          prefix,
+          organizationId: "org_1",
+          status: ResourceStatus.ACTIVE,
+          expiresAt: null,
+          keyHash,
+          scopeAssignments: [],
+          organization: { id: "org_1", slug: "org-1" },
+        });
+        const key3 = await service.lookupAndVerifyKey(prefix, secret, "org_1");
+        expect(key3).not.toBeNull();
+        expect(prismaService.apiKey.findFirst).toHaveBeenCalledTimes(2);
+      });
+
+      it("invalidates all cached entries on invalidateKeyCache()", async () => {
+        const { secret, prefix } = service.generateSecret();
+        const keyHash = service.hashSecret(secret);
+
+        prismaService.apiKey.findFirst.mockResolvedValueOnce({
+          id: "key_cached_all",
+          prefix,
+          organizationId: "org_1",
+          status: ResourceStatus.ACTIVE,
+          expiresAt: null,
+          keyHash,
+          scopeAssignments: [],
+          organization: { id: "org_1", slug: "org-1" },
+        });
+
+        await service.lookupAndVerifyKey(prefix, secret, "org_1");
+        expect(prismaService.apiKey.findFirst).toHaveBeenCalledTimes(1);
+
+        service.invalidateKeyCache();
+
+        prismaService.apiKey.findFirst.mockResolvedValueOnce({
+          id: "key_cached_all",
+          prefix,
+          organizationId: "org_1",
+          status: ResourceStatus.ACTIVE,
+          expiresAt: null,
+          keyHash,
+          scopeAssignments: [],
+          organization: { id: "org_1", slug: "org-1" },
+        });
+        await service.lookupAndVerifyKey(prefix, secret, "org_1");
+        expect(prismaService.apiKey.findFirst).toHaveBeenCalledTimes(2);
+      });
+
+      it("purges cached key when it crosses the exact expiration boundary", async () => {
+        const { secret, prefix } = service.generateSecret();
+        const keyHash = service.hashSecret(secret);
+        const expiresAt = new Date("2026-10-20T12:00:10Z");
+
+        // Initial lookup at 12:00:00 (active)
+        prismaService.$queryRaw.mockResolvedValueOnce([{ now: new Date("2026-10-20T12:00:00Z") }]);
+        prismaService.apiKey.findFirst.mockResolvedValueOnce({
+          id: "key_expiring_cached",
+          prefix,
+          organizationId: "org_1",
+          status: ResourceStatus.ACTIVE,
+          expiresAt,
+          keyHash,
+          scopeAssignments: [],
+          organization: { id: "org_1", slug: "org-1" },
+        });
+
+        const activeKey = await service.lookupAndVerifyKey(prefix, secret, "org_1");
+        expect(activeKey).not.toBeNull();
+
+        // Time reaches expiration boundary 12:00:10Z
+        prismaService.$queryRaw.mockResolvedValueOnce([{ now: expiresAt }]);
+        const expiredLookup = await service.lookupAndVerifyKey(prefix, secret, "org_1");
+        expect(expiredLookup).toBeNull();
+      });
+
+      it("revoking key invalidates cache immediately", async () => {
+        const { secret, prefix } = service.generateSecret();
+        const keyHash = service.hashSecret(secret);
+
+        prismaService.apiKey.findFirst
+          .mockResolvedValueOnce({
+            id: "key_to_revoke",
+            prefix,
+            organizationId: "org_1",
+            status: ResourceStatus.ACTIVE,
+            expiresAt: null,
+            keyHash,
+            scopeAssignments: [],
+            organization: { id: "org_1", slug: "org-1" },
+          })
+          .mockResolvedValueOnce({
+            id: "key_to_revoke",
+            organizationId: "org_1",
+            prefix,
+            name: "Key to revoke",
+          });
+
+        prismaService.apiKey.update.mockResolvedValueOnce({
+          id: "key_to_revoke",
+          status: ResourceStatus.REVOKED,
+        });
+
+        // Cache it
+        await service.lookupAndVerifyKey(prefix, secret, "org_1");
+        expect(prismaService.apiKey.findFirst).toHaveBeenCalledTimes(1);
+
+        // Revoke it
+        await service.revokeKey("key_to_revoke", "org_1");
+
+        // Subsequent lookup must hit DB (not stale cache) and receive null if DB returns null
+        prismaService.apiKey.findFirst.mockResolvedValueOnce(null);
+        const revokedLookup = await service.lookupAndVerifyKey(prefix, secret, "org_1");
+        expect(revokedLookup).toBeNull();
+        expect(prismaService.apiKey.findFirst).toHaveBeenCalledTimes(3);
+      });
+    });
+
+    describe("rotation overlap policy", () => {
+      it("does not extend old key beyond its original expiresAt", () => {
+        const now = new Date("2026-10-20T12:00:00Z");
+        const originalExpiresAt = new Date("2026-10-20T12:30:00Z"); // 30 min left
+        const overlapDurationMs = 3600_000; // 1 hour requested overlap
+
+        const calculated = service.calculateRotationOverlapExpiry(
+          originalExpiresAt,
+          overlapDurationMs,
+          now,
+        );
+
+        // Overlap requested would be 13:00:00, but original was 12:30:00. Must not exceed 12:30:00.
+        expect(calculated.toISOString()).toBe("2026-10-20T12:30:00.000Z");
+      });
+
+      it("uses full overlap window when original expiresAt is further than overlap window", () => {
+        const now = new Date("2026-10-20T12:00:00Z");
+        const originalExpiresAt = new Date("2026-10-20T18:00:00Z"); // 6 hours left
+        const overlapDurationMs = 3600_000; // 1 hour requested overlap
+
+        const calculated = service.calculateRotationOverlapExpiry(
+          originalExpiresAt,
+          overlapDurationMs,
+          now,
+        );
+
+        // Now + 1h is 13:00:00, which is earlier than 18:00:00
+        expect(calculated.toISOString()).toBe("2026-10-20T13:00:00.000Z");
+      });
+
+      it("uses full overlap window when original key had no expiresAt", () => {
+        const now = new Date("2026-10-20T12:00:00Z");
+        const overlapDurationMs = 3600_000; // 1 hour
+
+        const calculated = service.calculateRotationOverlapExpiry(
+          null,
+          overlapDurationMs,
+          now,
+        );
+
+        expect(calculated.toISOString()).toBe("2026-10-20T13:00:00.000Z");
+      });
+
+      it("rotateKey enforces bounded overlap policy and invalidates cache", async () => {
+        const keyId = "key_rotating";
+        const originalExpiresAt = new Date("2026-10-20T12:15:00Z"); // 15 min left
+        const overlapDurationMs = 3600_000; // 1 hour overlap requested
+
+        prismaService.apiKey.findUnique.mockResolvedValueOnce({
+          id: keyId,
+          organizationId: "org_1",
+          expiresAt: originalExpiresAt,
+        });
+
+        prismaService.apiKey.update.mockImplementationOnce((params: any) => ({
+          id: keyId,
+          organizationId: "org_1",
+          prefix: params.data.prefix,
+          name: "Rotating Key",
+          status: ResourceStatus.ACTIVE,
+          scopeAssignments: [],
+          rotatedAt: fixedNow,
+          expiresAt: params.data.expiresAt,
+        }));
+
+        const result = await service.rotateKey(keyId, "org_1", "user_1", {
+          overlapDurationMs,
+        });
+
+        // The new expiresAt for the rotated key must be capped at originalExpiresAt
+        expect(result.apiKey.expiresAt?.toISOString()).toBe("2026-10-20T12:15:00.000Z");
+      });
     });
   });
 });

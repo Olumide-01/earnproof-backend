@@ -3,6 +3,7 @@ export type AuthenticatedUser = {
   walletAddress: string;
   walletHash: string;
   role: string;
+  organizationId?: string;
 };
 
 /**

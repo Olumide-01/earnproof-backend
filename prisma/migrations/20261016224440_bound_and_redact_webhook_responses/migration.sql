@@ -16,6 +16,8 @@
 -- Existing text records are NOT automatically migrated; they are marked for retention.
 -- New deliveries will use the safe JSON structure automatically.
 
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- Change responseBody column from TEXT to JSONB
 ALTER TABLE "WebhookDelivery"
     ALTER COLUMN "responseBody" SET DATA TYPE JSONB USING (

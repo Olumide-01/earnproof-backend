@@ -1,13 +1,14 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import { BadRequestException, ForbiddenException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { OfflineBundleService } from "./offline-bundle.service";
-import { CredentialSigningKeyringService } from "@/common/crypto/credential-signing-keyring.service";
-import { PrismaService } from "@/database/prisma.service";
-import { AuditService } from "@/audit/audit.service";
-import { Clock } from "@/common/time/clock";
+import { CredentialSigningKeyringService } from "../common/crypto/credential-signing-keyring.service";
+import { PrismaService } from "../database/prisma.service";
+import { AuditService } from "../audit/audit.service";
+import { Clock } from "../common/time/clock";
 import { OfflineBundleDto } from "./dto/offline-bundle.dto";
 import { CreateOfflineBundleDto } from "./dto/create-offline-bundle.dto";
-import { canonicalize } from "@/common/crypto/canonicalize";
+import { canonicalize } from "../common/crypto/canonicalize";
 import { createHmac } from "crypto";
 
 // Mock implementations
@@ -81,6 +82,10 @@ describe("OfflineBundleService", () => {
         {
           provide: Clock,
           useValue: clock,
+        },
+        {
+          provide: ConfigService,
+          useValue: mockConfigService,
         },
         {
           provide: CredentialSigningKeyringService,

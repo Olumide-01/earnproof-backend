@@ -561,7 +561,7 @@ export class CredentialQuarantineService {
         },
       });
     } catch (error) {
-      this.logger.error(`Failed to create audit entry: ${error.message}`);
+      this.logger.error(`Failed to create audit entry: ${error instanceof Error ? error.message : String(error)}`);
       // Don't throw; audit failure should not block operations
     }
   }

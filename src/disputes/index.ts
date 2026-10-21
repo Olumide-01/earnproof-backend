@@ -9,16 +9,20 @@
 export { DisputesService } from "./disputes.service";
 
 // DTOs
-export { CreateDisputeDto, ListDisputesDto, AssignDisputeDto, ResolveDisputeDto } from "./disputes.service";
+export type { CreateDisputeDto, ListDisputesDto, AssignDisputeDto, ResolveDisputeDto } from "./disputes.service";
 export {
   CreateDisputeDecisionNotificationDto,
   ParticipantsDto,
+} from "./dto/dispute-decision-notification.dto";
+export type {
   DisputeDecisionNotificationResponseDto,
 } from "./dto/dispute-decision-notification.dto";
 
 // Types and Enums
-export {
+export type {
   DisputeDecisionNotificationPayload,
-  DisputeNotificationEventType,
   DisputeDecisionNotificationCommand,
+} from "./events/dispute-decision-notification.types";
+export {
+  DisputeNotificationEventType,
 } from "./events/dispute-decision-notification.types";

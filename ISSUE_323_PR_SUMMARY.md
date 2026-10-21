@@ -103,7 +103,7 @@ Previously, webhook subscriptions could only match events by type (e.g., "proof.
   - Webhook.predicate: Json? (optional PredicateV1)
   - WebhookDelivery.predicateSnapshot: Json? (snapshot at delivery creation)
 
-- **prisma/migrations/20260101100000_add_webhook_predicates/migration.sql** (14 lines)
+- **prisma/migrations/20261017010545_add_webhook_predicates/migration.sql** (14 lines)
   - ALTER TABLE Webhook ADD COLUMN predicate JSONB
   - ALTER TABLE WebhookDelivery ADD COLUMN predicateSnapshot JSONB
   - Backward compatible: NULL for existing rows
@@ -272,7 +272,7 @@ npx prisma migrate resolve --latest
 - src/webhooks/services/predicate-evaluator.service.ts
 - src/webhooks/services/predicate-evaluator.service.spec.ts
 - src/webhooks/services/predicate-preview.service.ts
-- prisma/migrations/20260101100000_add_webhook_predicates/migration.sql
+- prisma/migrations/20261017010545_add_webhook_predicates/migration.sql
 - docs/WEBHOOK_PREDICATES.md
 - ISSUE_323_PR_SUMMARY.md
 
@@ -319,5 +319,5 @@ npx prisma migrate resolve --latest
 
 - **Issue**: veridatum-labs/earnproof-backend#323
 - **Design Artifact**: docs/WEBHOOK_PREDICATES.md
-- **Migration**: prisma/migrations/20260101100000_add_webhook_predicates/migration.sql
+- **Migration**: prisma/migrations/20261017010545_add_webhook_predicates/migration.sql
 - **Evaluator Tests**: src/webhooks/services/predicate-evaluator.service.spec.ts

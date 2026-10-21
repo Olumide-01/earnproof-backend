@@ -6,6 +6,7 @@ import {
   DeclarationAuditEntry,
   PurposeDeclarationApprovalState,
   User,
+  Prisma,
 } from '@prisma/client';
 import { sha256 } from '../common/crypto/hash';
 
@@ -107,7 +108,7 @@ export class PurposeDeclarationsService {
         purposeKey: input.purposeKey,
         version: nextVersion,
         description: input.description,
-        disclosureScope: input.disclosureScope,
+        disclosureScope: input.disclosureScope as unknown as Prisma.InputJsonValue,
       },
     });
   }

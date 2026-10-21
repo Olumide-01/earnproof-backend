@@ -1,4 +1,4 @@
-﻿-- CreateEnum
+-- CreateEnum
 CREATE TYPE "ApiKeyEndpointCategory" AS ENUM ('PROOF', 'PAYMENT', 'CREDENTIAL', 'ORGANIZATION', 'AUTH_CONTEXT', 'OTHER');
 
 -- CreateEnum

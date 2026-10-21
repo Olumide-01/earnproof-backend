@@ -87,9 +87,10 @@ export class InvitationDeliveryOutcomeService {
           data: {
             organizationId,
             recipientEmailHash: emailHash,
+            invitationId: emailHash,
             outcome,
-            statusCode,
-            failureReason: failureReason ? failureReason.slice(0, 200) : undefined,
+            outcomeCode: statusCode ? String(statusCode) : undefined,
+            details: failureReason ? failureReason.slice(0, 200) : undefined,
             attemptCount,
             expiresAt,
           },
@@ -103,7 +104,7 @@ export class InvitationDeliveryOutcomeService {
           'BOUNCED',
           outcome,
         );
-      } else if (outcome === InvitationDeliveryOutcome.COMPLAINT) {
+      } else if (outcome === InvitationDeliveryOutcome.COMPLAINED) {
         await this.triggerAutoSuppression(
           organizationId,
           email,
@@ -112,14 +113,14 @@ export class InvitationDeliveryOutcomeService {
         );
       }
 
-      this.logger.info(
+      this.logger.log(
         `Outcome recorded: org=${organizationId}, outcome=${outcome}, recipient=${emailHash}`,
       );
 
       return outcomeRecord;
     } catch (error) {
       this.logger.error(
-        `Failed to record outcome for org=${organizationId}: ${error.message}`,
+        `Failed to record outcome for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -145,7 +146,7 @@ export class InvitationDeliveryOutcomeService {
     const organizationSecret = this.deriveOrganizationSecret(organizationId);
     const emailHash = this.hashEmail(email, organizationId, organizationSecret);
 
-    this.logger.info(
+    this.logger.log(
       `Auto-triggering suppression: org=${organizationId}, reason=${reason}, recipient=${emailHash}`,
     );
 
@@ -161,24 +162,24 @@ export class InvitationDeliveryOutcomeService {
           organizationId,
           recipientEmailHash: emailHash,
           reason,
-          sourceOutcome,
+          source: String(sourceOutcome),
           expiresAt: null, // Permanent
-          note: `Auto-suppressed due to ${reason}`,
+          details: `Auto-suppressed due to ${reason}`,
         },
         update: {
           reason,
-          sourceOutcome,
-          note: `Auto-suppressed due to ${reason}`,
+          source: String(sourceOutcome),
+          details: `Auto-suppressed due to ${reason}`,
           updatedAt: new Date(),
         },
       });
 
-      this.logger.info(
+      this.logger.log(
         `Suppression auto-applied: org=${organizationId}, reason=${reason}`,
       );
     } catch (error) {
       this.logger.error(
-        `Failed to auto-suppress recipient for org=${organizationId}: ${error.message}`,
+        `Failed to auto-suppress recipient for org=${organizationId}: ${(error as Error).message}`,
       );
       // Don't throw; log only. This is a side effect and shouldn't block delivery recording.
     }
@@ -228,12 +229,12 @@ export class InvitationDeliveryOutcomeService {
         total,
         byOutcome: stats,
         bounceRate: total > 0 ? ((stats.BOUNCED || 0) / total) * 100 : 0,
-        complaintRate: total > 0 ? ((stats.COMPLAINT || 0) / total) * 100 : 0,
+        complaintRate: total > 0 ? ((stats[InvitationDeliveryOutcome.COMPLAINED] || 0) / total) * 100 : 0,
         failureRate: total > 0 ? ((stats.FAILED || 0) / total) * 100 : 0,
       };
     } catch (error) {
       this.logger.error(
-        `Failed to get outcome stats for org=${organizationId}: ${error.message}`,
+        `Failed to get outcome stats for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -271,7 +272,7 @@ export class InvitationDeliveryOutcomeService {
       return outcomes;
     } catch (error) {
       this.logger.error(
-        `Failed to get recent outcomes for org=${organizationId}: ${error.message}`,
+        `Failed to get recent outcomes for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -296,11 +297,11 @@ export class InvitationDeliveryOutcomeService {
         },
       });
 
-      this.logger.info(`Cleaned up ${result.count} expired outcome records`);
+      this.logger.log(`Cleaned up ${result.count} expired outcome records`);
       return result.count;
     } catch (error) {
       this.logger.error(
-        `Failed to clean up expired outcomes: ${error.message}`,
+        `Failed to clean up expired outcomes: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -353,7 +354,7 @@ export class InvitationDeliveryOutcomeService {
       };
     } catch (error) {
       this.logger.error(
-        `Failed to detect abuse patterns for org=${organizationId}: ${error.message}`,
+        `Failed to detect abuse patterns for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }

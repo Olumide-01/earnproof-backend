@@ -1,15 +1,15 @@
 import { Controller, Get, Post, Param, UseGuards, Res, BadRequestException } from "@nestjs/common";
-import { ApiBearerAuth, ApiOkResponse, ApiNotFoundResponse, ApiConflictResponse, ApiTag } from "@nestjs/swagger";
+import { ApiBearerAuth, ApiOkResponse, ApiNotFoundResponse, ApiConflictResponse, ApiTags, ApiOperation } from "@nestjs/swagger";
 import { Response } from "express";
-import { AuthGuard } from "@nestjs/passport";
-import { CurrentUser } from "../../auth/decorators/current-user.decorator";
+import { AuthGuard } from "../../common/guards/auth.guard";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthenticatedUser } from "../../auth/auth.types";
 import { ApprovalIntentReceiptService } from "../services/approval-intent-receipt.service";
 import { ApprovalIntentReceiptKeysService } from "../services/approval-intent-receipt-keys.service";
 import { ApprovalIntentReceiptResponseDto } from "../dto/approval-intent-receipt-response.dto";
 import { ReceiptVerificationKeySetDto, ReceiptVerificationResultDto } from "../dto/receipt-verification-key.dto";
 
-@ApiTag("Governance - Approval Intent Receipts")
+@ApiTags("Governance - Approval Intent Receipts")
 @Controller("governance/approval-receipts")
 export class ApprovalIntentReceiptController {
   constructor(
@@ -27,8 +27,9 @@ export class ApprovalIntentReceiptController {
    * @returns Signed receipt binding approval to proposal and payload
    */
   @Post("/approvals/:approvalId/receipts")
-  @UseGuards(AuthGuard("bearer"))
+  @UseGuards(AuthGuard)
   @ApiBearerAuth()
+  @ApiOperation({ summary: "Issue a signed receipt for an approved approval, or retrieve existing" })
   @ApiOkResponse({
     description: "Receipt issued or retrieved",
     type: ApprovalIntentReceiptResponseDto,
@@ -52,8 +53,9 @@ export class ApprovalIntentReceiptController {
    * @returns The signed receipt
    */
   @Get("/receipts/:receiptId")
-  @UseGuards(AuthGuard("bearer"))
+  @UseGuards(AuthGuard)
   @ApiBearerAuth()
+  @ApiOperation({ summary: "Retrieve a receipt by ID" })
   @ApiOkResponse({
     description: "Receipt retrieved",
     type: ApprovalIntentReceiptResponseDto,
@@ -73,6 +75,7 @@ export class ApprovalIntentReceiptController {
    * @returns Verification result with receipt data if valid
    */
   @Post("/receipts/:receiptId/verify")
+  @ApiOperation({ summary: "Verify a receipt signature and return verified data" })
   @ApiOkResponse({
     description: "Verification result",
     type: ReceiptVerificationResultDto,
@@ -94,6 +97,7 @@ export class ApprovalIntentReceiptController {
    * @returns JWK Set or 304 Not Modified if ETag matches
    */
   @Get("/keys")
+  @ApiOperation({ summary: "Publish verification keys for receipts" })
   @ApiOkResponse({
     description: "Verification key set (JWK format)",
     type: ReceiptVerificationKeySetDto,
@@ -123,8 +127,9 @@ export class ApprovalIntentReceiptController {
    * @returns The receipt, or 404 if not yet issued
    */
   @Get("/approvals/:approvalId")
-  @UseGuards(AuthGuard("bearer"))
+  @UseGuards(AuthGuard)
   @ApiBearerAuth()
+  @ApiOperation({ summary: "Retrieve a receipt by approval ID" })
   @ApiOkResponse({
     description: "Receipt retrieved",
     type: ApprovalIntentReceiptResponseDto,

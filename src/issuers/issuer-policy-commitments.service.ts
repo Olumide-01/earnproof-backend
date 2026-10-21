@@ -5,7 +5,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
-import { Issuer, IssuerPolicyCommitment, ResourceStatus } from "@prisma/client";
+import { Issuer, IssuerPolicyCommitment, ResourceStatus, Prisma } from "@prisma/client";
 import { canonicalize } from "../common/crypto/canonicalize";
 import { sha256 } from "../common/crypto/hash";
 import { PrismaService } from "../database/prisma.service";
@@ -159,7 +159,7 @@ export class IssuerPolicyCommitmentsService {
           version: nextVersion,
           commitment,
           policyInputsHash,
-          policySnapshot,
+          policySnapshot: policySnapshot as unknown as Prisma.InputJsonValue,
           effectiveAt: new Date(),
           supersededAt: null,
           correlationId,

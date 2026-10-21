@@ -1,5 +1,11 @@
-import { PrismaClient } from "@prisma/client";
-import { DisputeStatus, DisputeCategory, ResourceStatus } from "@prisma/client";
+import {
+  DisputeCategory,
+  DisputeStatus,
+  OrganizationMemberRole,
+  PrismaClient,
+  ProofType,
+  ResourceStatus,
+} from "@prisma/client";
 
 /**
  * Dispute Demo Scenario
@@ -26,61 +32,71 @@ export async function applySyntheticDisputeDemoScenario(
 ): Promise<{ organizationId: string; proofIds: string[]; disputeIds: string[] }> {
   const orgName = options.organizationName || "Demo Org - Disputes";
 
-  // Step 1: Create organization
+  // Step 1: Create demo users
+  const ownerUser = await prisma.user.upsert({
+    where: { id: "user_demo_owner_disputes" },
+    update: {},
+    create: {
+      id: `user_demo_owner_disputes`,
+      walletAddress: "G_DEMO_OWNER_DISPUTES",
+      walletHash: "sha256:demo_owner_disputes",
+      displayName: "Demo Proof Owner",
+      role: "WORKER",
+      status: ResourceStatus.ACTIVE,
+    },
+  });
+
+  // Step 2: Create organization
   const organization = await prisma.organization.upsert({
-    where: { name: orgName },
+    where: { slug: "demo-org-disputes" },
     update: {},
     create: {
       id: `org_demo_disputes_${Date.now()}`,
       name: orgName,
+      slug: "demo-org-disputes",
       status: ResourceStatus.ACTIVE,
+      createdById: ownerUser.id,
       createdAt: new Date(),
     },
   });
 
   const organizationId = organization.id;
 
-  // Step 2: Create demo users
-  const ownerUser = await prisma.user.upsert({
-    where: { email: "demo-proof-owner@example.com" },
-    update: {},
-    create: {
-      id: `user_demo_owner_disputes`,
-      email: "demo-proof-owner@example.com",
-      name: "Demo Proof Owner",
-      status: ResourceStatus.ACTIVE,
-    },
-  });
-
   const submitterUser = await prisma.user.upsert({
-    where: { email: "demo-dispute-submitter@example.com" },
+    where: { id: "user_demo_submitter_disputes" },
     update: {},
     create: {
       id: `user_demo_submitter_disputes`,
-      email: "demo-dispute-submitter@example.com",
-      name: "Demo Dispute Submitter",
+      walletAddress: "G_DEMO_SUBMITTER_DISPUTES",
+      walletHash: "sha256:demo_submitter_disputes",
+      displayName: "Demo Dispute Submitter",
+      role: "WORKER",
       status: ResourceStatus.ACTIVE,
     },
   });
 
   const reviewerUser = await prisma.user.upsert({
-    where: { email: "demo-dispute-reviewer@example.com" },
+    where: { id: "user_demo_reviewer_disputes" },
     update: {},
     create: {
       id: `user_demo_reviewer_disputes`,
-      email: "demo-dispute-reviewer@example.com",
-      name: "Demo Dispute Reviewer",
+      walletAddress: "G_DEMO_REVIEWER_DISPUTES",
+      walletHash: "sha256:demo_reviewer_disputes",
+      displayName: "Demo Dispute Reviewer",
+      role: "DEVELOPER",
       status: ResourceStatus.ACTIVE,
     },
   });
 
   const adminUser = await prisma.user.upsert({
-    where: { email: "demo-admin-disputes@example.com" },
+    where: { id: "user_demo_admin_disputes" },
     update: {},
     create: {
       id: `user_demo_admin_disputes`,
-      email: "demo-admin-disputes@example.com",
-      name: "Demo Admin",
+      walletAddress: "G_DEMO_ADMIN_DISPUTES",
+      walletHash: "sha256:demo_admin_disputes",
+      displayName: "Demo Admin",
+      role: "ADMIN",
       status: ResourceStatus.ACTIVE,
     },
   });
@@ -97,6 +113,7 @@ export async function applySyntheticDisputeDemoScenario(
     create: {
       organizationId,
       userId: ownerUser.id,
+      role: OrganizationMemberRole.OWNER,
       status: "ACTIVE",
     },
   });
@@ -112,6 +129,7 @@ export async function applySyntheticDisputeDemoScenario(
     create: {
       organizationId,
       userId: submitterUser.id,
+      role: OrganizationMemberRole.MEMBER,
       status: "ACTIVE",
     },
   });
@@ -127,6 +145,7 @@ export async function applySyntheticDisputeDemoScenario(
     create: {
       organizationId,
       userId: reviewerUser.id,
+      role: OrganizationMemberRole.MEMBER,
       status: "ACTIVE",
     },
   });
@@ -142,6 +161,7 @@ export async function applySyntheticDisputeDemoScenario(
     create: {
       organizationId,
       userId: adminUser.id,
+      role: OrganizationMemberRole.ADMIN,
       status: "ACTIVE",
     },
   });
@@ -157,12 +177,13 @@ export async function applySyntheticDisputeDemoScenario(
     create: {
       id: `proof_demo_disputes_1`,
       userId: ownerUser.id,
-      proofType: "EMPLOYMENT",
-      status: ResourceStatus.ACTIVE,
+      proofType: ProofType.EMPLOYMENT_CONTINUITY,
+      schemaVersion: "1.0",
+      status: "ACTIVE",
+      network: "testnet",
+      assetCode: "XLM",
       expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-      canonicalForm:
-        "employment_canonical_form_demo_1_synth_deterministic_hash",
-      claimHash:
+      credentialHash:
         "sha256:0000000000000000000000000000000000000000000000000000000000000001",
       createdAt: new Date(),
     },
@@ -177,12 +198,13 @@ export async function applySyntheticDisputeDemoScenario(
     create: {
       id: `proof_demo_disputes_2`,
       userId: ownerUser.id,
-      proofType: "INCOME",
-      status: ResourceStatus.ACTIVE,
+      proofType: ProofType.MINIMUM_INCOME,
+      schemaVersion: "1.0",
+      status: "ACTIVE",
+      network: "testnet",
+      assetCode: "XLM",
       expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-      canonicalForm:
-        "income_canonical_form_demo_2_synth_deterministic_hash",
-      claimHash:
+      credentialHash:
         "sha256:0000000000000000000000000000000000000000000000000000000000000002",
       createdAt: new Date(),
     },
@@ -197,12 +219,13 @@ export async function applySyntheticDisputeDemoScenario(
     create: {
       id: `proof_demo_disputes_3`,
       userId: ownerUser.id,
-      proofType: "EMPLOYMENT",
-      status: ResourceStatus.ACTIVE,
+      proofType: ProofType.EMPLOYMENT_CONTINUITY,
+      schemaVersion: "1.0",
+      status: "ACTIVE",
+      network: "testnet",
+      assetCode: "XLM",
       expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-      canonicalForm:
-        "employment_canonical_form_demo_3_synth_deterministic_hash",
-      claimHash:
+      credentialHash:
         "sha256:0000000000000000000000000000000000000000000000000000000000000003",
       createdAt: new Date(),
     },
@@ -217,12 +240,13 @@ export async function applySyntheticDisputeDemoScenario(
     create: {
       id: `proof_demo_disputes_4`,
       userId: ownerUser.id,
-      proofType: "INCOME",
-      status: ResourceStatus.ACTIVE,
+      proofType: ProofType.MINIMUM_INCOME,
+      schemaVersion: "1.0",
+      status: "ACTIVE",
+      network: "testnet",
+      assetCode: "XLM",
       expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-      canonicalForm:
-        "income_canonical_form_demo_4_synth_deterministic_hash",
-      claimHash:
+      credentialHash:
         "sha256:0000000000000000000000000000000000000000000000000000000000000004",
       createdAt: new Date(),
     },
@@ -237,12 +261,13 @@ export async function applySyntheticDisputeDemoScenario(
     create: {
       id: `proof_demo_disputes_5`,
       userId: ownerUser.id,
-      proofType: "EMPLOYMENT",
-      status: ResourceStatus.ACTIVE,
+      proofType: ProofType.EMPLOYMENT_CONTINUITY,
+      schemaVersion: "1.0",
+      status: "ACTIVE",
+      network: "testnet",
+      assetCode: "XLM",
       expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-      canonicalForm:
-        "employment_canonical_form_demo_5_synth_deterministic_hash",
-      claimHash:
+      credentialHash:
         "sha256:0000000000000000000000000000000000000000000000000000000000000005",
       createdAt: new Date(),
     },

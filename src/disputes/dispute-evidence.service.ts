@@ -330,18 +330,18 @@ export class DisputeEvidenceService {
   // ── Mappers ────────────────────────────────────────────────────────────
 
   private toDisputeResult(
-    row: { id: string; proofId: string; status: string; reason: string; openerHash: string; resolvedAt: Date | null; resolution: string | null; createdAt: Date },
+    row: { id: string; proofId: string; status: string; reason?: string | null; openerHash?: string | null; resolvedAt?: Date | null; resolution?: string | null; createdAt: Date },
     manifestCount: number,
   ): DisputeResult {
     return {
       disputeId: row.id,
       proofId: row.proofId,
       status: row.status,
-      reason: row.reason,
-      openerHash: row.openerHash,
+      reason: row.reason ?? "",
+      openerHash: row.openerHash ?? "",
       manifestCount,
-      resolvedAt: row.resolvedAt,
-      resolution: row.resolution,
+      resolvedAt: row.resolvedAt ?? null,
+      resolution: row.resolution ?? null,
       createdAt: row.createdAt,
     };
   }

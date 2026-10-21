@@ -12,8 +12,11 @@ import { ScopesGuard } from "../common/guards/scopes.guard";
 import { RequestNonceService } from "./request-nonce.service";
 import { IntegrationAuthController } from "./integration-auth.controller";
 
+import { AuditModule } from "../audit/audit.module";
+import { Clock, SystemClock } from "../common/time/clock";
+
 @Module({
-  imports: [AuthModule, QuotasModule],
+  imports: [AuthModule, QuotasModule, AuditModule],
   controllers: [ApiKeysController, IntegrationAuthController],
   providers: [
     ApiKeyService,
@@ -24,6 +27,7 @@ import { IntegrationAuthController } from "./integration-auth.controller";
     RequestSigningGuard,
     RequestNonceService,
     ScopesGuard,
+    { provide: Clock, useClass: SystemClock },
   ],
   exports: [
     ApiKeyService,

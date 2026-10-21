@@ -3,11 +3,12 @@ import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags, ApiBody } from "@nes
 import { OfflineBundleService } from "./offline-bundle.service";
 import { CreateOfflineBundleDto } from "./dto/create-offline-bundle.dto";
 import { OfflineBundleDto } from "./dto/offline-bundle.dto";
-import { ApiErrorDto } from "@/common/dto/api-error.dto";
-import { RequireScopes } from "@/common/decorators/authorization-policy.decorator";
-import { ScopesGuard } from "@/common/guards/scopes.guard";
-import { ApiKeyGuard } from "@/common/guards/api-key.guard";
-import { ApiKeyContext, ApiKeyScope } from "@/api-keys/api-key.service";
+import { ApiErrorDto } from "../common/dto/api-error.dto";
+import { RequireScopes } from "../common/decorators/require-scopes.decorator";
+import { ScopesGuard } from "../common/guards/scopes.guard";
+import { ApiKeyGuard } from "../common/guards/api-key.guard";
+import { ApiKeyContext } from "../api-keys/api-key.types";
+import { ApiKeyScope } from "@prisma/client";
 
 /**
  * Offline verification bundle management.
@@ -17,7 +18,7 @@ import { ApiKeyContext, ApiKeyScope } from "@/api-keys/api-key.service";
  * and scoped via allowlist to include only authorized disclosures.
  */
 @ApiTags("proofs")
-@Controller("api/v1/proofs/bundles")
+@Controller("proofs/bundles")
 @UseGuards(ApiKeyGuard, ScopesGuard)
 @ApiBearerAuth()
 export class OfflineBundlesController {
@@ -145,7 +146,7 @@ export class OfflineBundlesController {
 
     return this.offlineBundleService.generateBundle(req, {
       organizationId: apiKeyContext.organizationId,
-      requestingApiKeyId: apiKeyContext.apiKeyId,
+      requestingApiKeyId: apiKeyContext.keyId,
       // In real implementation, would load accessible proofs from permissions/quotas
       // For MVP, assume all requested proofs are accessible
       accessibleProofIds: new Set(req.proofIds),

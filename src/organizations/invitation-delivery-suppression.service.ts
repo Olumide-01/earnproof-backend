@@ -85,26 +85,26 @@ export class InvitationDeliverySuppressionService {
           organizationId,
           recipientEmailHash: emailHash,
           reason,
-          sourceOutcome,
+          source: sourceOutcome ? String(sourceOutcome) : 'BOUNCE',
           expiresAt,
-          note: note ? note.slice(0, 500) : undefined,
+          details: note ? note.slice(0, 500) : undefined,
         },
         update: {
           reason,
-          sourceOutcome,
+          source: sourceOutcome ? String(sourceOutcome) : 'BOUNCE',
           expiresAt,
-          note: note ? note.slice(0, 500) : undefined,
+          details: note ? note.slice(0, 500) : undefined,
           updatedAt: new Date(),
         },
       });
 
-      this.logger.info(
+      this.logger.log(
         `Suppression recorded: org=${organizationId}, reason=${reason}`,
       );
       return suppression;
     } catch (error) {
       this.logger.error(
-        `Failed to add suppression for org=${organizationId}: ${error.message}`,
+        `Failed to add suppression for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -136,17 +136,17 @@ export class InvitationDeliverySuppressionService {
         },
       });
 
-      this.logger.info(
+      this.logger.log(
         `Suppression removed: org=${organizationId}, reason=${removed.reason}`,
       );
       return removed;
     } catch (error) {
-      if (error.code === 'P2025') {
+      if ((error as any).code === 'P2025') {
         this.logger.debug(`Suppression not found for org=${organizationId}`);
         return null;
       }
       this.logger.error(
-        `Failed to remove suppression for org=${organizationId}: ${error.message}`,
+        `Failed to remove suppression for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -192,7 +192,7 @@ export class InvitationDeliverySuppressionService {
       return suppression;
     } catch (error) {
       this.logger.error(
-        `Failed to check suppression for org=${organizationId}: ${error.message}`,
+        `Failed to check suppression for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -216,13 +216,13 @@ export class InvitationDeliverySuppressionService {
           where: { organizationId },
           skip,
           take: Math.min(take, 500), // Cap at 500 per query
-          orderBy: { suppressedAt: 'desc' },
+          orderBy: { createdAt: 'desc' },
         });
 
       return suppressions;
     } catch (error) {
       this.logger.error(
-        `Failed to list suppressions for org=${organizationId}: ${error.message}`,
+        `Failed to list suppressions for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -267,7 +267,7 @@ export class InvitationDeliverySuppressionService {
       };
     } catch (error) {
       this.logger.error(
-        `Failed to get suppression stats for org=${organizationId}: ${error.message}`,
+        `Failed to get suppression stats for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -290,10 +290,10 @@ export class InvitationDeliverySuppressionService {
         },
       });
 
-      this.logger.info(`Cleaned up ${result.count} expired suppressions`);
+      this.logger.log(`Cleaned up ${result.count} expired suppressions`);
       return result.count;
     } catch (error) {
-      this.logger.error(`Failed to clean up expired suppressions: ${error.message}`);
+      this.logger.error(`Failed to clean up expired suppressions: ${(error as Error).message}`);
       throw error;
     }
   }

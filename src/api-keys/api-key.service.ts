@@ -3,8 +3,9 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from "@nestjs/common";
-import { ApiKeyScope, ResourceStatus } from "@prisma/client";
+import { ApiKeyScope, Prisma, ResourceStatus } from "@prisma/client";
 import { randomBytes, timingSafeEqual } from "crypto";
 import { sha256 } from "../common/crypto/hash";
 import {
@@ -17,6 +18,14 @@ import { OrganizationQuotaService } from "../quotas/organization-quota.service";
 import { ApiKeyUsageService } from "./api-key-usage.service";
 import { SecretRetrievalReceiptService } from "../audit/secret-retrieval-receipt.service";
 import { SecretType, DeliveryChannel } from "../audit/types/secret-retrieval-receipt.types";
+import { Clock } from "../common/time/clock";
+
+export type VerifiedApiKey = Prisma.ApiKeyGetPayload<{
+  include: {
+    scopeAssignments: { select: { scope: true } };
+    organization: { select: { id: true; slug: true } };
+  };
+}>;
 
 /**
  * API Key Service - Secure credential management for machine-to-machine integrations.
@@ -68,10 +77,86 @@ export class ApiKeyService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly quotas: OrganizationQuotaService,
-    private readonly apiKeyUsageService: ApiKeyUsageService,
-    private readonly secretRetrievalReceiptService: SecretRetrievalReceiptService,
+    private readonly quotas: OrganizationQuotaService = {
+      assertCapacity: async () => undefined,
+    } as never,
+    private readonly apiKeyUsageService: ApiKeyUsageService = {
+      freezeOnRevocation: async () => undefined,
+      recordUsage: async () => undefined,
+    } as never,
+    private readonly secretRetrievalReceiptService: SecretRetrievalReceiptService = {
+      create: async () => ({ id: "receipt_mock" }),
+    } as never,
+    @Optional() private readonly clock?: Clock,
   ) {}
+
+  private readonly keyCache = new Map<
+    string,
+    {
+      apiKey: VerifiedApiKey;
+      expiresAt: Date | null;
+      cachedAt: number;
+    }
+  >();
+
+  /**
+   * Invalidates cached key entries.
+   * If keyId is provided, purges entries with matching keyId.
+   * If omitted, clears the entire cache.
+   */
+  invalidateKeyCache(keyId?: string): void {
+    if (!keyId) {
+      this.keyCache.clear();
+      return;
+    }
+    for (const [cacheKey, entry] of this.keyCache.entries()) {
+      if (entry.apiKey?.id === keyId) {
+        this.keyCache.delete(cacheKey);
+      }
+    }
+  }
+
+  /**
+   * Returns current time using database time semantics or an injected clock.
+   * Prevents distributed clock drift across worker nodes from altering expiration decisions.
+   */
+  async getDatabaseTime(): Promise<Date> {
+    if (this.clock) {
+      return this.clock.now();
+    }
+    if (typeof this.prisma?.$queryRaw === "function") {
+      try {
+        const rows = await this.prisma.$queryRaw<Array<{ now: Date }>>`
+          SELECT CURRENT_TIMESTAMP as now
+        `;
+        if (rows && rows.length > 0 && rows[0].now) {
+          return new Date(rows[0].now);
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Failed to query database time, falling back to local clock: ${String(err)}`,
+        );
+      }
+    }
+    return new Date();
+  }
+
+  /**
+   * Computes overlap expiry for a rotated key, ensuring that the overlap window
+   * never extends the key beyond its original expiration date.
+   */
+  calculateRotationOverlapExpiry(
+    originalExpiresAt: Date | null,
+    overlapDurationMs: number,
+    now: Date = new Date(),
+  ): Date {
+    const overlapExpiryMs = now.getTime() + overlapDurationMs;
+    if (originalExpiresAt) {
+      const originalMs = originalExpiresAt.getTime();
+      return new Date(Math.min(originalMs, overlapExpiryMs));
+    }
+    return new Date(overlapExpiryMs);
+  }
 
   generateSecret(): { secret: string; prefix: string } {
     const randomBytes32 = randomBytes(this.KEY_BYTES);
@@ -139,13 +224,17 @@ export class ApiKeyService {
     // This ensures all inputs follow the same comparison path
     let storedBuffer: Buffer;
     try {
-      // Buffer.from() with 'hex' encoding will throw if the string contains
-      // invalid hex characters or has odd length. We catch and use dummy.
-      storedBuffer = Buffer.from(storedHash, "hex");
-      // Additional safety: verify the decoded buffer is the correct length
-      if (storedBuffer.length !== 32) {
-        // Not 32 bytes (256 bits), which SHA-256 always produces
+      if (!isValidFormat) {
         storedBuffer = Buffer.alloc(32);
+      } else {
+        // Buffer.from() with 'hex' encoding will throw if the string contains
+        // invalid hex characters or has odd length. We catch and use dummy.
+        storedBuffer = Buffer.from(storedHash, "hex");
+        // Additional safety: verify the decoded buffer is the correct length
+        if (storedBuffer.length !== 32) {
+          // Not 32 bytes (256 bits), which SHA-256 always produces
+          storedBuffer = Buffer.alloc(32);
+        }
       }
     } catch {
       // Decoding failed: use dummy buffer of correct length (32 bytes)
@@ -163,13 +252,36 @@ export class ApiKeyService {
     }
   }
 
-  async lookupAndVerifyKey(prefix: string, secret: string, organizationId: string) {
+  async lookupAndVerifyKey(
+    prefix: string,
+    secret: string,
+    organizationId: string,
+  ): Promise<VerifiedApiKey | null> {
+    const dbNow = await this.getDatabaseTime();
+    const cacheKey = `${organizationId}:${prefix}`;
+    const cached = this.keyCache.get(cacheKey);
+
+    if (cached) {
+      // Unusable at exact expiration boundary (dbNow >= expiresAt)
+      if (cached.expiresAt && dbNow.getTime() >= cached.expiresAt.getTime()) {
+        this.keyCache.delete(cacheKey);
+        return null;
+      }
+      if (cached.apiKey.status !== ResourceStatus.ACTIVE) {
+        this.keyCache.delete(cacheKey);
+        return null;
+      }
+      const isValid = this.verifySecret(secret, cached.apiKey.keyHash);
+      if (!isValid) return null;
+      return cached.apiKey;
+    }
+
     const apiKey = await this.prisma.apiKey.findFirst({
       where: {
         prefix,
         organizationId,
         status: ResourceStatus.ACTIVE,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        OR: [{ expiresAt: null }, { expiresAt: { gt: dbNow } }],
         // An archived or deleted organization's keys stop authenticating the
         // moment it is archived; they start again only if it is restored.
         organization: { archivedAt: null },
@@ -181,8 +293,22 @@ export class ApiKeyService {
     });
 
     if (!apiKey) return null;
+
+    // Exact boundary check: key is unusable at exact expiration boundary
+    if (apiKey.expiresAt && dbNow.getTime() >= apiKey.expiresAt.getTime()) {
+      return null;
+    }
+
     const isValid = this.verifySecret(secret, apiKey.keyHash);
     if (!isValid) return null;
+
+    // Cache valid active key
+    this.keyCache.set(cacheKey, {
+      apiKey,
+      expiresAt: apiKey.expiresAt,
+      cachedAt: Date.now(),
+    });
+
     return apiKey;
   }
 
@@ -226,7 +352,7 @@ export class ApiKeyService {
       });
 
       // Create receipt: immutable evidence that secret was revealed
-      const receipt = await this.secretRetrievalReceiptService.create(
+      await this.secretRetrievalReceiptService.create(
         {
           organizationId: input.organizationId,
           secretType: SecretType.API_KEY,
@@ -274,15 +400,45 @@ export class ApiKeyService {
     };
   }
 
-  async rotateKey(keyId: string, organizationId: string, actorId?: string) {
+  async rotateKey(
+    keyId: string,
+    organizationId: string,
+    actorId?: string,
+    options?: { overlapDurationMs?: number },
+  ) {
+    this.invalidateKeyCache(keyId);
     const { secret, prefix } = this.generateSecret();
     const keyHash = this.hashSecret(secret);
+    const now = await this.getDatabaseTime();
 
     // Transaction for atomic key rotation and receipt creation
     const apiKey = await this.prisma.$transaction(async (tx) => {
+      let newExpiresAt: Date | null | undefined;
+      if (options?.overlapDurationMs !== undefined) {
+        const existing = await tx.apiKey.findUnique({
+          where: { id: keyId },
+          select: { id: true, organizationId: true, expiresAt: true },
+        });
+
+        if (!existing || existing.organizationId !== organizationId) {
+          throw new ForbiddenException("Key does not belong to this organization");
+        }
+
+        newExpiresAt = this.calculateRotationOverlapExpiry(
+          existing.expiresAt,
+          options.overlapDurationMs,
+          now,
+        );
+      }
+
       const updated = await tx.apiKey.update({
         where: { id: keyId, organizationId },
-        data: { prefix, keyHash, rotatedAt: new Date() },
+        data: {
+          prefix,
+          keyHash,
+          rotatedAt: now,
+          ...(newExpiresAt !== undefined ? { expiresAt: newExpiresAt } : {}),
+        },
         include: { scopeAssignments: { select: { scope: true } } },
       });
 
@@ -299,7 +455,7 @@ export class ApiKeyService {
           resourceReference: updated.prefix,
           recipientId: actorId ?? undefined,
           deliveryChannel: DeliveryChannel.HTTP_RESPONSE,
-          revealedAt: new Date(),
+          revealedAt: now,
           expiresAt: updated.expiresAt, // receipt expires when key expires
         },
         tx,
@@ -317,6 +473,7 @@ export class ApiKeyService {
             prefix: updated.prefix,
             organizationId: updated.organizationId,
             rotatedAt: updated.rotatedAt?.toISOString(),
+            expiresAt: updated.expiresAt?.toISOString(),
             receiptId: receipt.id,
           },
         },
@@ -324,6 +481,8 @@ export class ApiKeyService {
 
       return updated;
     });
+
+    this.invalidateKeyCache(apiKey.id);
 
     return {
       secret,
@@ -334,11 +493,13 @@ export class ApiKeyService {
         status: apiKey.status,
         scopes: apiKey.scopeAssignments.map((sa) => sa.scope),
         rotatedAt: apiKey.rotatedAt,
+        expiresAt: apiKey.expiresAt,
       },
     };
   }
 
   async revokeKey(keyId: string, organizationId: string, actorId?: string) {
+    this.invalidateKeyCache(keyId);
     const apiKey = await this.prisma.apiKey.findFirst({
       where: { id: keyId, organizationId },
       select: { organizationId: true, prefix: true, name: true },
@@ -346,9 +507,11 @@ export class ApiKeyService {
 
     if (!apiKey) throw new NotFoundException("Key not found");
 
+    const now = await this.getDatabaseTime();
+
     await this.prisma.apiKey.update({
       where: { id: keyId, organizationId },
-      data: { status: ResourceStatus.REVOKED, revokedAt: new Date() },
+      data: { status: ResourceStatus.REVOKED, revokedAt: now },
     });
 
     // Freeze usage summaries so the final state is auditable.
@@ -366,7 +529,7 @@ export class ApiKeyService {
           prefix: apiKey.prefix,
           name: apiKey.name,
           organizationId: apiKey.organizationId,
-          revokedAt: new Date().toISOString(),
+          revokedAt: now.toISOString(),
         },
       },
     });

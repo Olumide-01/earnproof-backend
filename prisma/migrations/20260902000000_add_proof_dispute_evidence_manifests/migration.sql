@@ -1,4 +1,4 @@
-﻿-- CreateEnum
+-- CreateEnum
 CREATE TYPE "DisputeStatus" AS ENUM ('OPEN', 'UNDER_REVIEW', 'RESOLVED', 'REJECTED');
 CREATE TYPE "DisputeEvidenceRole" AS ENUM ('PROOF_OWNER', 'ISSUER', 'ADMIN', 'VERIFIER');
 

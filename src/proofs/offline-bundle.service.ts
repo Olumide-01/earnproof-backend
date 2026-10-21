@@ -1,12 +1,11 @@
 import { Injectable, Logger, BadRequestException, ForbiddenException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { PrismaService } from "@/database/prisma.service";
-import { AuditService } from "@/audit/audit.service";
-import { Clock } from "@/common/time/clock";
-import { CredentialSigningKeyringService } from "@/common/crypto/credential-signing-keyring.service";
-import { canonicalize } from "@/common/crypto/canonicalize";
-import { createHash, createHmac } from "crypto";
-import { v4 as uuidv4 } from "uuid";
+import { PrismaService } from "../database/prisma.service";
+import { AuditService } from "../audit/audit.service";
+import { Clock } from "../common/time/clock";
+import { CredentialSigningKeyringService } from "../common/crypto/credential-signing-keyring.service";
+import { canonicalize } from "../common/crypto/canonicalize";
+import { createHash, createHmac, randomUUID as uuidv4 } from "crypto";
 import { CreateOfflineBundleDto } from "./dto/create-offline-bundle.dto";
 import {
   OfflineBundleDto,
@@ -17,7 +16,7 @@ import {
   CheckpointSummaryDto,
 } from "./dto/offline-bundle.dto";
 import { SignedCredentialDto } from "./dto/proof-created.dto";
-import { ApiErrorCode } from "@/common/dto/api-error.dto";
+import { ApiErrorCode } from "../common/dto/api-error.dto";
 
 const BUNDLE_FORMAT_VERSION = "earnproof.offline-bundle.v1";
 const MAX_BUNDLE_LIFETIME_SECONDS = 3600; // 1 hour default max
@@ -87,10 +86,10 @@ export class OfflineBundleService {
     // 3. Load proofs and credentials
     const proofs = await this.prisma.proof.findMany({
       where: { id: { in: req.proofIds } },
-      include: { claim: true },
+      include: { claim: true, user: true },
     });
 
-    const notFoundIds = req.proofIds.filter((id) => !proofs.find((p) => p.id === id));
+    const notFoundIds = req.proofIds.filter((id) => !proofs.find((p: any) => p.id === id));
     if (notFoundIds.length > 0) {
       this.logger.warn(`Requested proof IDs not found: ${notFoundIds.join(", ")}`);
     }
@@ -169,8 +168,8 @@ export class OfflineBundleService {
           signature: manifest.signature,
           contentsHash: manifest.contentsHash,
           contents: contents as any,
-          issuedAt: manifest.issuedAt,
-          expiresAt: manifest.expiresAt,
+          issuedAt: new Date(manifest.issuedAt),
+          expiresAt: new Date(manifest.expiresAt),
           maxFreshnessSeconds: manifest.maxFreshnessSeconds,
         },
       });
@@ -183,7 +182,7 @@ export class OfflineBundleService {
         meta: {
           bundleId,
           proofCount: req.proofIds.length,
-          expiresAt: manifest.expiresAt.toISOString(),
+          expiresAt: manifest.expiresAt,
           maxFreshnessSeconds: manifest.maxFreshnessSeconds,
         },
       });

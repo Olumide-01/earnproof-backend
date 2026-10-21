@@ -24,4 +24,4 @@ CREATE UNIQUE INDEX "idempotency_records_organizationId_idempotencyKey_key" ON "
 CREATE INDEX "idempotency_records_organizationId_expiresAt_idx" ON "idempotency_records"("organizationId", "expiresAt");
 
 -- AddForeignKey
-ALTER TABLE "idempotency_records" ADD CONSTRAINT "idempotency_records_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "idempotency_records" ADD CONSTRAINT "idempotency_records_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "Organization"("id") ON DELETE CASCADE ON UPDATE CASCADE;

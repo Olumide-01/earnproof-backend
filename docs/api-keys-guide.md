@@ -314,7 +314,7 @@ No body is returned on success.
 
 ### How API Key Authentication Works
 
-1. **Include the header** — Add `Authorization: Bearer <secret>` and `X-Organization-Id: <org-id>` to your request
+1. **Include the header** — Add `Authorization: Bearer <secret>` and `X-Organization-Id: <org-id>` to your request. (Note: The EarnProof API does not accept an `X-API-Key` header; credentials must be passed via the `Authorization: Bearer` scheme).
 2. **Server verifies** — The API validates the secret against stored hash using constant-time comparison (prevents timing attacks)
 3. **Scopes checked** — If the endpoint requires specific scopes, the server verifies your key has them
 4. **Request executes** — If all checks pass, the endpoint runs and your key's `lastUsedAt` is updated
@@ -351,6 +351,12 @@ Scopes follow the principle of least privilege: each key should have only the sc
 - **Endpoints affected:**
   - `POST /api/v1/proofs/:id/verify` (detailed verification)
 
+#### BUNDLES_CREATE
+- **Grants:** Permission to generate bounded offline verification bundles
+- **Use case:** Offline verification, edge credential packages, compliance archives
+- **Endpoints affected:**
+  - `/api/v1/proofs/bundles`
+
 #### PAYMENT_READ
 - **Grants:** Read-only access to payment history and classification
 - **Use case:** Analytics, reporting, audit trails
@@ -368,17 +374,22 @@ Scopes follow the principle of least privilege: each key should have only the sc
 
 #### ORG_READ
 - **Grants:** Read-only access to organization metadata (members, settings, audit logs)
-- **Use case:** Organization management dashboards, compliance exports
+- **Use case:** Organization management dashboards, compliance exports, diagnostics
 - **Endpoints affected:**
   - `GET /api/v1/organizations/:id`
   - `GET /api/v1/organizations/:id/members`
   - `GET /api/v1/organizations/:id/audit-logs`
+  - `/api/v1/integrations/signature-diagnostics`
 
 #### ORG_ADMIN
 - **Grants:** Full administrative control (members, settings, key management, webhooks)
-- **Use case:** Organization administration tools, provisioning systems
+- **Use case:** Organization administration tools, provisioning systems, operations
 - **Endpoints affected:**
   - All organization endpoints including creation, updates, and deletion
+  - `/api/v1/contracts/:network/:contractId`
+  - `/api/v1/health/incidents`
+  - `/api/v1/jobs/revocation-propagation`
+  - `/api/v1/v1/contract-reconciliation`
 
 ### Scope Enforcement
 

@@ -74,13 +74,6 @@ export class RetentionJob {
 
     const result = await this.cleanup.run({ dryRun });
 
-    if (!leaseResult.acquired) {
-      this.logger.debug(
-        `Retention cleanup lease held by another instance (${leaseResult.owner}); skipping sweep`,
-      );
-      return;
-    }
-
     // Counts only, per class. Never the identity of what was removed. The
     // policy version and cutoff are recorded for every run so a real run can
     // be matched to the dry run an operator reviewed.

@@ -1,5 +1,5 @@
 import { DisputeStatus, DisputeCategory } from "@prisma/client";
-import { faker } from "@faker-js/faker";
+import { randomUUID } from "crypto";
 
 /**
  * Dispute Factory
@@ -67,10 +67,10 @@ export function syntheticEvidenceCommitment(seed: string): string {
 export function createSyntheticDispute(
   input: CreateSyntheticDisputeInput = {}
 ): SyntheticDisputeData {
-  const id = input.proofId ? syntheticDisputeId(input.proofId) : syntheticDisputeId(faker.string.uuid());
-  const proofId = input.proofId || `proof_synthetic_${faker.string.uuid().substring(0, 8)}`;
-  const organizationId = input.organizationId || `org_synthetic_${faker.string.uuid().substring(0, 8)}`;
-  const submittedBy = input.submittedBy || `user_synthetic_${faker.string.uuid().substring(0, 8)}`;
+  const id = input.proofId ? syntheticDisputeId(input.proofId) : syntheticDisputeId(randomUUID());
+  const proofId = input.proofId || `proof_synthetic_${randomUUID().substring(0, 8)}`;
+  const organizationId = input.organizationId || `org_synthetic_${randomUUID().substring(0, 8)}`;
+  const submittedBy = input.submittedBy || `user_synthetic_${randomUUID().substring(0, 8)}`;
   const status = input.status || DisputeStatus.OPEN;
   const category = input.category || DisputeCategory.ACCURACY;
 
@@ -204,26 +204,26 @@ export function createSyntheticDisputeBatch(
   resolvedRejected: SyntheticDisputeData;
   withdrawn: SyntheticDisputeData;
 } {
-  const owner = `user_owner_${faker.string.uuid().substring(0, 8)}`;
-  const submitter = `user_submitter_${faker.string.uuid().substring(0, 8)}`;
-  const reviewer = `user_reviewer_${faker.string.uuid().substring(0, 8)}`;
+  const owner = `user_owner_${randomUUID().substring(0, 8)}`;
+  const submitter = `user_submitter_${randomUUID().substring(0, 8)}`;
+  const reviewer = `user_reviewer_${randomUUID().substring(0, 8)}`;
 
   return {
     open: createSyntheticOpenDispute(
-      `proof_open_${faker.string.uuid().substring(0, 8)}`,
+      `proof_open_${randomUUID().substring(0, 8)}`,
       organizationId,
       submitter,
       DisputeCategory.ACCURACY
     ),
     assigned: createSyntheticAssignedDispute(
-      `proof_assigned_${faker.string.uuid().substring(0, 8)}`,
+      `proof_assigned_${randomUUID().substring(0, 8)}`,
       organizationId,
       submitter,
       reviewer,
       DisputeCategory.FRAUD
     ),
     resolvedUpheld: createSyntheticResolvedDispute(
-      `proof_resolved_upheld_${faker.string.uuid().substring(0, 8)}`,
+      `proof_resolved_upheld_${randomUUID().substring(0, 8)}`,
       organizationId,
       submitter,
       reviewer,
@@ -233,7 +233,7 @@ export function createSyntheticDisputeBatch(
       DisputeCategory.ACCURACY
     ),
     resolvedRejected: createSyntheticResolvedDispute(
-      `proof_resolved_rejected_${faker.string.uuid().substring(0, 8)}`,
+      `proof_resolved_rejected_${randomUUID().substring(0, 8)}`,
       organizationId,
       submitter,
       reviewer,
@@ -243,7 +243,7 @@ export function createSyntheticDisputeBatch(
       DisputeCategory.FRAUD
     ),
     withdrawn: createSyntheticWithdrawnDispute(
-      `proof_withdrawn_${faker.string.uuid().substring(0, 8)}`,
+      `proof_withdrawn_${randomUUID().substring(0, 8)}`,
       organizationId,
       submitter,
       DisputeCategory.TECHNICAL
@@ -273,15 +273,15 @@ export interface DisputeNotificationScenario {
 export function createDisputeNotificationScenarios(
   organizationId: string
 ): DisputeNotificationScenario[] {
-  const owner1 = `owner_${faker.string.uuid().substring(0, 8)}`;
-  const submitter1 = `submitter_${faker.string.uuid().substring(0, 8)}`;
-  const reviewer1 = `reviewer_${faker.string.uuid().substring(0, 8)}`;
+  const owner1 = `owner_${randomUUID().substring(0, 8)}`;
+  const submitter1 = `submitter_${randomUUID().substring(0, 8)}`;
+  const reviewer1 = `reviewer_${randomUUID().substring(0, 8)}`;
 
   return [
     {
       name: "Open dispute filed",
       dispute: createSyntheticOpenDispute(
-        `proof_scenario_1_${faker.string.uuid().substring(0, 8)}`,
+        `proof_scenario_1_${randomUUID().substring(0, 8)}`,
         organizationId,
         submitter1,
         DisputeCategory.ACCURACY
@@ -298,7 +298,7 @@ export function createDisputeNotificationScenarios(
     {
       name: "Dispute assigned to reviewer",
       dispute: createSyntheticAssignedDispute(
-        `proof_scenario_2_${faker.string.uuid().substring(0, 8)}`,
+        `proof_scenario_2_${randomUUID().substring(0, 8)}`,
         organizationId,
         submitter1,
         reviewer1,
@@ -316,7 +316,7 @@ export function createDisputeNotificationScenarios(
     {
       name: "Dispute resolved - UPHELD",
       dispute: createSyntheticResolvedDispute(
-        `proof_scenario_3_${faker.string.uuid().substring(0, 8)}`,
+        `proof_scenario_3_${randomUUID().substring(0, 8)}`,
         organizationId,
         submitter1,
         reviewer1,
@@ -337,7 +337,7 @@ export function createDisputeNotificationScenarios(
     {
       name: "Dispute resolved - REJECTED",
       dispute: createSyntheticResolvedDispute(
-        `proof_scenario_4_${faker.string.uuid().substring(0, 8)}`,
+        `proof_scenario_4_${randomUUID().substring(0, 8)}`,
         organizationId,
         submitter1,
         reviewer1,
@@ -358,7 +358,7 @@ export function createDisputeNotificationScenarios(
     {
       name: "Dispute withdrawn by submitter",
       dispute: createSyntheticWithdrawnDispute(
-        `proof_scenario_5_${faker.string.uuid().substring(0, 8)}`,
+        `proof_scenario_5_${randomUUID().substring(0, 8)}`,
         organizationId,
         submitter1,
         DisputeCategory.TECHNICAL
@@ -375,7 +375,7 @@ export function createDisputeNotificationScenarios(
     {
       name: "Proof owner is also dispute submitter",
       dispute: createSyntheticResolvedDispute(
-        `proof_scenario_6_${faker.string.uuid().substring(0, 8)}`,
+        `proof_scenario_6_${randomUUID().substring(0, 8)}`,
         organizationId,
         owner1, // Same person as owner
         reviewer1,

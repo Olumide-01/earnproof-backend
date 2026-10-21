@@ -5,6 +5,7 @@ import {
   HealthIncidentStatus,
   HealthIncidentReasonCode,
   HealthTransition,
+  HealthIncidentAcknowledgement,
 } from "@prisma/client";
 
 /**
@@ -138,7 +139,12 @@ export class HealthIncidentService {
    */
   private async getOrCreateIncident(
     dependencyName: string
-  ): Promise<HealthIncident> {
+  ): Promise<
+    HealthIncident & {
+      transitions: HealthTransition[];
+      acknowledgement: HealthIncidentAcknowledgement | null;
+    }
+  > {
     let incident = await this.prisma.healthIncident.findUnique({
       where: { dependencyName },
       include: {

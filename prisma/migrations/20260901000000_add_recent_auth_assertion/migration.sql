@@ -1,4 +1,4 @@
-﻿-- Short-lived, action-bound recent-auth assertion store.
+-- Short-lived, action-bound recent-auth assertion store.
 -- Consumed (single-use) on successful destructive operation.
 CREATE TABLE "RecentAuthAssertion" (
   "id"          TEXT         NOT NULL,

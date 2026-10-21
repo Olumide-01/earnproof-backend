@@ -1,4 +1,4 @@
-﻿-- Replay-protection nonce store for signed API requests.
+-- Replay-protection nonce store for signed API requests.
 -- Each row represents a nonce consumed within the active clock window.
 -- Rows auto-expire (expiresAt); a periodic sweep deletes old rows.
 -- NEVER stores IP addresses, request bodies, path parameters, or user agents.

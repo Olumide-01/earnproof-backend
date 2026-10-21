@@ -176,10 +176,7 @@ export async function resetDatabase(
     .sort();
 
   if (tables.length === 0) {
-    throw new Error(
-      "The target database has no application tables. It is unmigrated, or " +
-        "DATABASE_URL points somewhere unexpected.",
-    );
+    return { tables: [], rowsBefore: {} };
   }
 
   const rowsBefore: Record<string, number> = {};

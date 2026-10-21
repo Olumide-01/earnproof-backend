@@ -483,7 +483,7 @@ export const AUDIT_EVENTS: readonly AuditEventDefinition[] = [
       action: "api_key.revoked",
       resourceType: "api_key",
     },
-    actorTypes: ["user"],
+    actorTypes: ["user", "system"],
     outcomes: ["success"],
     tenant: "metadata_organization_id",
     writeFailure: "fail_closed",
@@ -763,6 +763,7 @@ export const REQUIRED_AUDIT_DOMAINS: readonly AuditDomain[] = [
   "api_key",
   "webhook",
   "operator",
+];
 
 /** Lookup by stable type. */
 export function auditEvent(type: string): AuditEventDefinition {

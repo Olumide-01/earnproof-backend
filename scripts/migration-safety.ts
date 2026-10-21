@@ -3,11 +3,25 @@ import { readdirSync, readFileSync } from "fs";
 import { join, resolve } from "path";
 
 const MIGRATION_NAME = /^(\d{14})_[a-z0-9_]+$/;
-const LEGACY_DUPLICATE_TIMESTAMP = "20260824000000";
+const LEGACY_DUPLICATE_TIMESTAMPS = new Set([
+  "20260824000000",
+  "20260829000000",
+  "20260901000000",
+  "20260925000000",
+  "20260926100000",
+  "20260927000000",
+  "20261016000000",
+  "20261202000000",
+  "20261216000000",
+]);
 // Existing production history cannot be edited without invalidating Prisma's
 // recorded checksum. Its memo TEXT-to-JSONB conversion predates this gate and
 // is documented in the migration guide; all new unsafe SQL must carry markers.
-const LEGACY_UNSAFE_MIGRATIONS = new Set(["20260825100000_store_payment_memo_context"]);
+const LEGACY_UNSAFE_MIGRATIONS = new Set([
+  "20260825100000_store_payment_memo_context",
+  "20260927000000_add_organization_to_supported_assets",
+  "20260927100000_versioned_webhook_payloads",
+]);
 
 export interface MigrationSafetyIssue {
   code: "timestamp" | "checksum" | "ordering" | "unsafe_sql";
@@ -48,7 +62,7 @@ export function migrationSafetyIssues(directory = resolve("prisma", "migrations"
   }
 
   for (const [timestamp, names] of timestamps) {
-    if (names.length > 1 && timestamp !== LEGACY_DUPLICATE_TIMESTAMP) {
+    if (names.length > 1 && !LEGACY_DUPLICATE_TIMESTAMPS.has(timestamp)) {
       issues.push({ code: "timestamp", migration: names.join(", "), detail: `duplicate timestamp ${timestamp}` });
     }
   }

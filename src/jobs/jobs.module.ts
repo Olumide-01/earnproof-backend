@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { AuthModule } from "../auth/auth.module";
 import { ApiKeysModule } from "../api-keys/api-keys.module";
 import { ApprovalsModule } from "../approvals/approvals.module";
 import { DisclosureModule } from "../common/disclosure/disclosure.module";
@@ -32,9 +33,11 @@ import { BulkAdminService } from "./bulk-admin/bulk-admin.service";
 import { BulkAdminController } from "./bulk-admin/bulk-admin.controller";
 import { MetricsModule } from "../metrics/metrics.module";
 import { MetricsRollupJob } from "./metrics-rollup.job";
+import { ApiKeyExpirationJob } from "./api-key-expiration.job";
 
 @Module({
   imports: [
+    AuthModule,
     ApprovalsModule,
     IssuersModule,
     PaymentsModule,
@@ -44,9 +47,13 @@ import { MetricsRollupJob } from "./metrics-rollup.job";
     ApiKeysModule,
     MetricsModule,
   ],
-  controllers: [JobExecutionController, RevocationPropagationController],
-  controllers: [JobExecutionController, BulkAdminController],
+  controllers: [
+    JobExecutionController,
+    RevocationPropagationController,
+    BulkAdminController,
+  ],
   providers: [
+    ApiKeyExpirationJob,
     ContractAnchoringService,
     AnchoringWorkerService,
     PaymentBackfillWorkerService,
@@ -84,6 +91,7 @@ import { MetricsRollupJob } from "./metrics-rollup.job";
     JobExecutionService,
     RevocationPropagationReconcilerService,
     BulkAdminService,
+    ApiKeyExpirationJob,
   ],
 })
 export class JobsModule {}

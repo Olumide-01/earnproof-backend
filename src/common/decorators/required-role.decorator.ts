@@ -5,4 +5,4 @@ import { SetMetadata } from "@nestjs/common";
  * Must be used with @UseGuards(AuthGuard, RoleGuard)
  * Usage: @RequiredRole('ADMIN')
  */
-export const RequiredRole = (role: string) => SetMetadata("requiredRole", role);
+export const RequiredRole = (role: string | string[]) => SetMetadata("requiredRole", role);

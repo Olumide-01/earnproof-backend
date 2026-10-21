@@ -319,9 +319,9 @@ export class RevocationCheckpointService {
       sequence: string;
       root: string;
       observedAt: string;
-      quarantineReason: RevocationCheckpointQuarantineReason;
+      quarantineReason: RevocationCheckpointQuarantineReason | null;
       quarantineDetails: string | null;
-      quarantinedAt: string;
+      quarantinedAt: string | null;
     }>;
     total: number;
   }> {
@@ -362,7 +362,7 @@ export class RevocationCheckpointService {
         ...item,
         sequence: item.sequence.toString(),
         observedAt: item.observedAt.toISOString(),
-        quarantinedAt: item.quarantinedAt!.toISOString(),
+        quarantinedAt: item.quarantinedAt ? item.quarantinedAt.toISOString() : null,
       })),
       total,
     };

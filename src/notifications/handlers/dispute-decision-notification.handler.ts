@@ -259,7 +259,7 @@ export class DisputeDecisionNotificationHandler implements DomainEventHandler<Di
       await this.securityNotificationService.createNotification(payload.organizationId, {
         type: SecurityNotificationType.DISPUTE_FILED,
         severity,
-        userId: null, // Organization-wide visibility
+        userId: undefined, // Organization-wide visibility
         title: `[Audit] ${title}`,
         summary: `Organization audit trail: ${summary}`,
         data: notificationData,
@@ -284,7 +284,7 @@ export class DisputeDecisionNotificationHandler implements DomainEventHandler<Di
    * - EXPIRED: WARNING (stale-state cleanup)
    */
   private determineSeverity(
-    decisionType: "RESOLVED" | "WITHDRAWN" | "EXPIRED",
+    decisionType: "RESOLVED" | "WITHDRAWN" | "EXPIRED" | "FILED" | "ASSIGNED",
   ): SecurityNotificationSeverity {
     switch (decisionType) {
       case "RESOLVED":
@@ -292,6 +292,8 @@ export class DisputeDecisionNotificationHandler implements DomainEventHandler<Di
         // This is conservative; actual severity depends on outcome field
         return SecurityNotificationSeverity.HIGH;
       case "WITHDRAWN":
+      case "FILED":
+      case "ASSIGNED":
         return SecurityNotificationSeverity.INFO;
       case "EXPIRED":
         return SecurityNotificationSeverity.WARNING;

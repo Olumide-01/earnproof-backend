@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { ProofsService } from "./proofs.service";
 import {
   RefreshProofRequestDto,
@@ -83,7 +83,7 @@ export class BoundedRefreshService {
 
   constructor(
     private readonly proofsService: ProofsService,
-    config?: Partial<BoundedRefreshConfig>,
+    @Optional() config?: Partial<BoundedRefreshConfig>,
   ) {
     this.config = {
       defaultMaxLatencyMs: 5000,
@@ -173,7 +173,7 @@ export class BoundedRefreshService {
         ]);
         return result;
       } catch (error) {
-        if (error.message === "live_check_exceeded_latency_bound") {
+        if (error instanceof Error && error.message === "live_check_exceeded_latency_bound") {
           const elapsed = Date.now() - startTime;
           this.logger.warn(
             `Live refresh for proof ${proofId} exceeded latency bound (${elapsed}ms > ${maxLatencyMs}ms)`,
@@ -252,10 +252,11 @@ export class BoundedRefreshService {
       return await this.refreshLiveWithTimeout(proofId, context, maxLatencyMs, startTime);
     } catch (liveError) {
       const elapsedMs = Date.now() - startTime;
+      const liveMsg = liveError instanceof Error ? liveError.message : String(liveError);
 
       // Live check failed or timed out; fall back to cache
       this.logger.debug(
-        `Live refresh for proof ${proofId} failed (${liveError.message}), falling back to cache`,
+        `Live refresh for proof ${proofId} failed (${liveMsg}), falling back to cache`,
       );
 
       try {
@@ -267,7 +268,7 @@ export class BoundedRefreshService {
           freshness: {
             provenance: ResultProvenance.CACHE_FALLBACK,
             latencyMs: elapsedMs,
-            reason: `live_check_failed: ${liveError.message}`,
+            reason: `live_check_failed: ${liveMsg}`,
           },
         };
       } catch (cacheError) {
@@ -278,13 +279,14 @@ export class BoundedRefreshService {
 
         // Fall back to standard verification (local state with cached contract if available)
         const localOnly = await this.proofsService.verifyProof(proofId, context);
+        const cacheMsg = cacheError instanceof Error ? cacheError.message : String(cacheError);
 
         return {
           ...localOnly,
           freshness: {
             provenance: ResultProvenance.LOCAL_ONLY,
             latencyMs: elapsedMs,
-            reason: `live_and_cache_failed: live=${liveError.message}, cache=${cacheError.message}`,
+            reason: `live_and_cache_failed: live=${liveMsg}, cache=${cacheMsg}`,
           },
         };
       }

@@ -159,7 +159,7 @@ export class InvitationDeliveryLimitService {
       return checks;
     } catch (error) {
       this.logger.error(
-        `Failed to check limits for org=${organizationId}: ${error.message}`,
+        `Failed to check limits for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -250,12 +250,12 @@ export class InvitationDeliveryLimitService {
         },
       });
 
-      this.logger.info(
+      this.logger.log(
         `Delivery attempt recorded: org=${organizationId}, recipient=${emailHash}`,
       );
     } catch (error) {
       this.logger.error(
-        `Failed to record delivery attempt for org=${organizationId}: ${error.message}`,
+        `Failed to record delivery attempt for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -297,12 +297,12 @@ export class InvitationDeliveryLimitService {
         },
       }).catch(() => null); // Ignore not-found
 
-      this.logger.info(
+      this.logger.log(
         `Recipient limits reset: org=${organizationId}, recipient=${emailHash}`,
       );
     } catch (error) {
       this.logger.error(
-        `Failed to reset limits for org=${organizationId}: ${error.message}`,
+        `Failed to reset limits for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -341,7 +341,7 @@ export class InvitationDeliveryLimitService {
       return override || null;
     } catch (error) {
       this.logger.error(
-        `Failed to find override: org=${organizationId}, type=${overrideType}: ${error.message}`,
+        `Failed to find override: org=${organizationId}, type=${overrideType}: ${(error as Error).message}`,
       );
       return null;
     }
@@ -414,7 +414,7 @@ export class InvitationDeliveryLimitService {
       };
     } catch (error) {
       this.logger.error(
-        `Failed to get limit stats for org=${organizationId}: ${error.message}`,
+        `Failed to get limit stats for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }

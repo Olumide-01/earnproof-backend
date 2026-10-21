@@ -54,12 +54,36 @@ export class WebhookSigningService {
     deliveryId: string,
     keyId: string,
     body: string,
+  ): string;
+  sign(
+    secret: string,
+    timestamp: number,
+    deliveryId: string,
+    body: string,
+  ): string;
+  sign(
+    secret: string,
+    timestamp: number,
+    deliveryId: string,
+    keyIdOrBody: string,
+    maybeBody?: string,
   ): string {
-    const baseString = `${timestamp}.${deliveryId}.${keyId}.${body}`;
+    if (maybeBody !== undefined) {
+      const keyId = keyIdOrBody;
+      const body = maybeBody;
+      const baseString = `${timestamp}.${deliveryId}.${keyId}.${body}`;
+      const digest = createHmac("sha256", secret)
+        .update(baseString, "utf8")
+        .digest("hex");
+      return `v1.${keyId}=${digest}`;
+    }
+
+    const body = keyIdOrBody;
+    const baseString = `${timestamp}.${deliveryId}.${body}`;
     const digest = createHmac("sha256", secret)
       .update(baseString, "utf8")
       .digest("hex");
-    return `v1.${keyId}=${digest}`;
+    return `v1=${digest}`;
   }
 
   /**
@@ -77,12 +101,43 @@ export class WebhookSigningService {
     keyId: string,
     body: string,
     signature: string,
+  ): boolean;
+  verify(
+    secret: string,
+    timestamp: number,
+    deliveryId: string,
+    body: string,
+    signature: string,
+  ): boolean;
+  verify(
+    secret: string,
+    timestamp: number,
+    deliveryId: string,
+    arg4: string,
+    arg5: string,
+    arg6?: string,
   ): boolean {
-    const expected = this.sign(secret, timestamp, deliveryId, keyId, body);
+    let expected: string;
+    let actual: string;
+
+    if (arg6 !== undefined) {
+      const keyId = arg4;
+      const body = arg5;
+      actual = arg6;
+      expected = this.sign(secret, timestamp, deliveryId, keyId, body);
+    } else {
+      const body = arg4;
+      actual = arg5;
+      const keyId = this.extractKeyId(actual);
+      expected = keyId
+        ? this.sign(secret, timestamp, deliveryId, keyId, body)
+        : this.sign(secret, timestamp, deliveryId, body);
+    }
+
     try {
       return timingSafeEqual(
         Buffer.from(expected, "utf8"),
-        Buffer.from(signature, "utf8"),
+        Buffer.from(actual, "utf8"),
       );
     } catch {
       // Buffers differ in length — definitely not equal.

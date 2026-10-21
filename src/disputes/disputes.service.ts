@@ -179,7 +179,7 @@ export class DisputesService {
               disputeId: dispute.id,
               proofId: dispute.proofId,
               organizationId,
-              category: dispute.category,
+              category: dispute.category!,
               decisionType: "FILED",
               status: dispute.status,
               participants: {
@@ -389,14 +389,14 @@ export class DisputesService {
             disputeId: updated.id,
             proofId: updated.proofId,
             organizationId,
-            category: updated.category,
+            category: updated.category!,
             decisionType: "WITHDRAWN",
             status: updated.status,
             withdrawnBy: user.id,
             withdrawnAt: updated.withdrawnAt?.toISOString(),
             participants: {
               proofOwnerId: updated.proof.userId,
-              disputeSubmitterId: updated.submittedBy,
+              disputeSubmitterId: updated.submittedBy!,
             },
           },
         });
@@ -499,12 +499,12 @@ export class DisputesService {
             disputeId: updated.id,
             proofId: updated.proofId,
             organizationId,
-            category: updated.category,
+            category: updated.category!,
             decisionType: "ASSIGNED",
             status: updated.status,
             participants: {
               proofOwnerId: updated.proof.userId,
-              disputeSubmitterId: updated.submittedBy,
+              disputeSubmitterId: updated.submittedBy!,
               assignedReviewerId: input.assignedTo,
             },
           },
@@ -614,17 +614,17 @@ export class DisputesService {
             disputeId: updated.id,
             proofId: updated.proofId,
             organizationId,
-            category: updated.category,
+            category: updated.category!,
             decisionType: "RESOLVED",
             status: updated.status,
-            resolutionOutcome: updated.resolutionOutcome,
-            resolutionReason: updated.resolutionReason,
+            resolutionOutcome: updated.resolutionOutcome || undefined,
+            resolutionReason: updated.resolutionReason || undefined,
             resolvedBy: user.id,
             resolvedAt: updated.resolvedAt?.toISOString(),
             participants: {
               proofOwnerId: updated.proof.userId,
-              disputeSubmitterId: updated.submittedBy,
-              assignedReviewerId: updated.assignedTo,
+              disputeSubmitterId: updated.submittedBy!,
+              assignedReviewerId: updated.assignedTo || undefined,
             },
           },
         });
@@ -661,7 +661,7 @@ export class DisputesService {
       if (!result[stat.status]) {
         result[stat.status] = {};
       }
-      result[stat.status][stat.category] = stat._count;
+      result[stat.status][stat.category ?? "UNKNOWN"] = stat._count;
     }
 
     return result;
