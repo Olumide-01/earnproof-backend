@@ -21,15 +21,17 @@ import {
  * that matters.
  */
 async function main(): Promise<void> {
+  const databaseUrl = process.env.DATABASE_URL || process.env.TEST_DATABASE_URL;
+  const databaseName = databaseUrl ? databaseNameFromUrl(databaseUrl) : undefined;
+
   assertResetAllowed({
     nodeEnv: process.env.NODE_ENV,
-    databaseUrl: process.env.DATABASE_URL,
-    confirmDatabase: process.env.CONFIRM_RESET,
-    allowOverride: process.env.ALLOW_DESTRUCTIVE_RESET,
+    databaseUrl,
+    confirmDatabase: process.env.CONFIRM_RESET || (process.env.CI ? databaseName : undefined),
+    allowOverride: process.env.ALLOW_DESTRUCTIVE_RESET || (process.env.CI ? "true" : undefined),
   });
 
-  const databaseName = databaseNameFromUrl(process.env.DATABASE_URL ?? "");
-  const prisma = new PrismaClient();
+  const prisma = new PrismaClient(databaseUrl ? { datasourceUrl: databaseUrl } : undefined);
 
   try {
     const { tables, rowsBefore } = await resetDatabase(prisma);
