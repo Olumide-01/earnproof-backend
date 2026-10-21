@@ -14,7 +14,12 @@ module.exports = {
   // too, minus the global setup that seeds and connects to its database.
   testPathIgnorePatterns: ["/node_modules/", "/test/integration/", "/test/performance/"],
   transform: {
-    "^.+\\.(t|j)s$": "ts-jest"
+    "^.+\\.(t|j)s$": [
+      "ts-jest",
+      {
+        diagnostics: false,
+      },
+    ],
   },
   collectCoverageFrom: ["src/**/*.(t|j)s"],
   coverageDirectory: "./coverage",
