@@ -78,7 +78,7 @@ export class InvitationDeliveryAuditService {
       );
     } catch (error) {
       this.logger.error(
-        `Failed to log suppression change for org=${organizationId}: ${error.message}`,
+        `Failed to log suppression change for org=${organizationId}: ${(error as Error).message}`,
       );
       // Don't throw; audit failure should not block the operation.
     }
@@ -118,7 +118,7 @@ export class InvitationDeliveryAuditService {
       );
     } catch (error) {
       this.logger.error(
-        `Failed to log limit change for org=${organizationId}: ${error.message}`,
+        `Failed to log limit change for org=${organizationId}: ${(error as Error).message}`,
       );
     }
   }
@@ -159,7 +159,7 @@ export class InvitationDeliveryAuditService {
       );
     } catch (error) {
       this.logger.error(
-        `Failed to log outcome change for org=${organizationId}: ${error.message}`,
+        `Failed to log outcome change for org=${organizationId}: ${(error as Error).message}`,
       );
     }
   }
@@ -201,7 +201,7 @@ export class InvitationDeliveryAuditService {
       );
     } catch (error) {
       this.logger.error(
-        `Failed to log override change for org=${organizationId}: ${error.message}`,
+        `Failed to log override change for org=${organizationId}: ${(error as Error).message}`,
       );
     }
   }
@@ -224,7 +224,7 @@ export class InvitationDeliveryAuditService {
       return events;
     } catch (error) {
       this.logger.error(
-        `Failed to get audit events for org=${organizationId}: ${error.message}`,
+        `Failed to get audit events for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -256,7 +256,7 @@ export class InvitationDeliveryAuditService {
       return events;
     } catch (error) {
       this.logger.error(
-        `Failed to get actor audit events for org=${organizationId}: ${error.message}`,
+        `Failed to get actor audit events for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -302,7 +302,7 @@ export class InvitationDeliveryAuditService {
       };
     } catch (error) {
       this.logger.error(
-        `Failed to get audit summary for org=${organizationId}: ${error.message}`,
+        `Failed to get audit summary for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -318,7 +318,7 @@ export class InvitationDeliveryAuditService {
   private boundJSON(metadata?: Record<string, any>): Record<string, any> | undefined {
     if (!metadata) return undefined;
 
-    const bounded = {};
+    const bounded: Record<string, any> = {};
     let keyCount = 0;
 
     for (const [key, value] of Object.entries(metadata)) {

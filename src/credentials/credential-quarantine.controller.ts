@@ -14,8 +14,8 @@ import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse } from '@nestjs/swagg
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RoleGuard } from '../common/guards/role.guard';
 import { RequiredRole } from '../common/decorators/required-role.decorator';
-import { AuthenticatedUser } from '../common/decorators/authenticated-user.decorator';
-import { AuthenticatedSession } from '../common/types/authenticated-session';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { AuthenticatedUser } from '../auth/auth.types';
 import { CredentialQuarantineService } from './credential-quarantine.service';
 import { CredentialQuarantine, CredentialQuarantineState } from '@prisma/client';
 
@@ -89,7 +89,7 @@ export class CredentialQuarantineController {
     description: 'List of quarantine records',
   })
   async listQuarantines(
-    @AuthenticatedUser() session: AuthenticatedSession,
+    @CurrentUser() session: AuthenticatedUser,
     @Query('state') state?: CredentialQuarantineState,
     @Query('limit') limit: string = '100',
     @Query('offset') offset: string = '0',
@@ -98,7 +98,7 @@ export class CredentialQuarantineController {
     const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
 
     const items = await this.quarantineService.listQuarantines(
-      session.organizationId,
+      session.organizationId!,
       state,
       safeLimit,
       safeOffset,
@@ -134,10 +134,10 @@ export class CredentialQuarantineController {
     description: 'Quarantine record not found or cross-tenant access attempt',
   })
   async getQuarantine(
-    @AuthenticatedUser() session: AuthenticatedSession,
+    @CurrentUser() session: AuthenticatedUser,
     @Param('quarantineId') quarantineId: string,
   ): Promise<CredentialQuarantine> {
-    return await this.quarantineService.getQuarantine(quarantineId, session.organizationId);
+    return await this.quarantineService.getQuarantine(quarantineId, session.organizationId!);
   }
 
   /**
@@ -170,13 +170,13 @@ export class CredentialQuarantineController {
     description: 'Record not in QUARANTINED state',
   })
   async refreshEvidence(
-    @AuthenticatedUser() session: AuthenticatedSession,
+    @CurrentUser() session: AuthenticatedUser,
     @Param('quarantineId') quarantineId: string,
   ): Promise<RefreshEvidenceResponse> {
     const result = await this.quarantineService.refreshEvidence(
       quarantineId,
-      session.organizationId,
-      session.userId,
+      session.organizationId!,
+      session.id,
     );
 
     return {
@@ -228,14 +228,14 @@ export class CredentialQuarantineController {
     description: 'Concurrent modification (optimistic lock failed)',
   })
   async releaseCredential(
-    @AuthenticatedUser() session: AuthenticatedSession,
+    @CurrentUser() session: AuthenticatedUser,
     @Param('quarantineId') quarantineId: string,
     @Body() dto: ReleaseCredentialRequest,
   ): Promise<ReleaseCredentialResponse> {
     const released = await this.quarantineService.releaseCredential(
       quarantineId,
-      session.organizationId,
-      session.userId,
+      session.organizationId!,
+      session.id,
       dto,
     );
 
@@ -278,7 +278,7 @@ export class CredentialQuarantineController {
     description: 'Concurrent modification (optimistic lock failed)',
   })
   async rejectCredential(
-    @AuthenticatedUser() session: AuthenticatedSession,
+    @CurrentUser() session: AuthenticatedUser,
     @Param('quarantineId') quarantineId: string,
     @Body() dto: RejectCredentialRequest,
   ): Promise<RejectCredentialResponse> {
@@ -288,8 +288,8 @@ export class CredentialQuarantineController {
 
     const rejected = await this.quarantineService.rejectCredential(
       quarantineId,
-      session.organizationId,
-      session.userId,
+      session.organizationId!,
+      session.id,
       dto,
     );
 

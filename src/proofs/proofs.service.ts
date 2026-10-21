@@ -393,6 +393,7 @@ export class ProofsService {
   private readonly quotas: OrganizationQuotaService;
   private readonly attestationsService: AttestationsService;
   private readonly issuerPolicyCommitmentsService: IssuerPolicyCommitmentsService;
+  private readonly verificationProvenanceService?: VerificationProvenanceService;
   private readonly contractAnchoringService?: ContractAnchoringService;
   private readonly webhookDeliveryService?: WebhookDeliveryService;
   private readonly credentialVerificationKeyService?: CredentialVerificationKeyService;
@@ -410,10 +411,11 @@ export class ProofsService {
     @Optional() @Inject(CredentialVerificationKeyService) p8?: any,
     @Optional() @Inject(ProofVerificationAbuseService) p9?: any,
     @Optional() @Inject(IssuerPolicyCommitmentsService) p10?: any,
+    @Optional() @Inject(VerificationProvenanceService) p11?: any,
   ) {
     this.prisma = prisma;
     this.signedCursorService = signedCursorService;
-    const rest: any[] = [p3, p4, p5, p6, p7, p8, p9, p10].filter((x) => x !== undefined && x !== null);
+    const rest: any[] = [p3, p4, p5, p6, p7, p8, p9, p10, p11].filter((x) => x !== undefined && x !== null);
     
     let eventService = { recordEvent: async () => {} } as any;
     let quotaService = { consumeForUser: async () => {}, checkQuota: async () => true } as any;
@@ -430,6 +432,8 @@ export class ProofsService {
         attestationService = candidate;
       } else if (typeof candidate.captureOrReuse === "function" || typeof candidate.getCurrentCommitment === "function") {
         issuerPolicyCommitmentsService = candidate;
+      } else if (typeof candidate.recordProvenance === "function") {
+        this.verificationProvenanceService = candidate;
       } else if (
         typeof candidate.anchor === "function" ||
         typeof candidate.enqueueIntent === "function" ||
@@ -1017,18 +1021,18 @@ export class ProofsService {
     const { data, pageInfo } = buildPage(proofs, limit, "createdAt");
 
     // Sign the next cursor token if there are more items
-    const nextCursor = hasMore
+    const nextCursor = pageInfo.hasMore
       ? this.signedCursorService.sign({
-          cursorId: page[page.length - 1]?.id ?? "",
+          cursorId: data[data.length - 1]?.id ?? "",
           tenantId: userId,
           filterId,
         })
       : null;
 
     return {
-      data: page.map((proof) => this.toHistoryItem(proof)),
+      data: data.map((proof) => this.toHistoryItem(proof)),
       pageInfo: {
-        hasMore,
+        hasMore: pageInfo.hasMore,
         nextCursor,
       },
     };
@@ -2924,6 +2928,60 @@ export class ProofsService {
         },
       },
     };
+  }
+
+  private async recordVerificationProvenance(
+    proofId: string,
+    proofStatus: ProofStatus,
+    verificationResult: VerificationResult,
+    credential: any,
+    contractStatus?: any,
+  ): Promise<void> {
+    if (!this.verificationProvenanceService) return;
+    try {
+      const builder = new ProvenanceDecisionBuilder();
+
+      builder
+        .recordCredentialSource(proofId, "PROOF_CLAIM")
+        .setPolicyVersion(VERIFICATION_PROVENANCE_SCHEMA_VERSION);
+
+      if (contractStatus?.checked) {
+        builder.recordContractObservation(
+          contractStatus.transactionHash || "unknown",
+          contractStatus.valid ?? false,
+          contractStatus.revoked ?? false,
+        );
+      }
+
+      let failureReason: string | undefined;
+      if (verificationResult === VerificationResult.EXPIRED) {
+        failureReason = "PROOF_EXPIRATION_DETECTED";
+      } else if (verificationResult === VerificationResult.REVOKED) {
+        failureReason = "PROOF_REVOCATION_DETECTED";
+      } else if (verificationResult === VerificationResult.INVALID_SIGNATURE) {
+        failureReason = "CREDENTIAL_MISMATCH";
+      } else if (verificationResult === VerificationResult.UNVERIFIED_ISSUER) {
+        failureReason = "ANCHORING_INCOMPLETE";
+      } else if (verificationResult === VerificationResult.UNKNOWN_PROOF) {
+        failureReason = "PROOF_NOT_FOUND";
+      }
+
+      const provenanceInput = builder.build(
+        proofId,
+        proofStatus,
+        verificationResult,
+        credential,
+        contractStatus,
+        failureReason,
+        undefined,
+      );
+
+      await this.verificationProvenanceService.recordProvenance(provenanceInput);
+    } catch (error) {
+      this.logger.debug(
+        `Failed to record verification provenance for proof ${proofId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /**

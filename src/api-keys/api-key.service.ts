@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from "@nestjs/common";
 import { ApiKeyScope, Prisma, ResourceStatus } from "@prisma/client";
 import { randomBytes, timingSafeEqual } from "crypto";
@@ -86,7 +87,7 @@ export class ApiKeyService {
     private readonly secretRetrievalReceiptService: SecretRetrievalReceiptService = {
       create: async () => ({ id: "receipt_mock" }),
     } as never,
-    private readonly clock?: Clock,
+    @Optional() private readonly clock?: Clock,
   ) {}
 
   private readonly keyCache = new Map<

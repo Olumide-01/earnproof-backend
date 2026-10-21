@@ -18,6 +18,7 @@ import {
   VerificationProvenanceSourceInput,
   VERIFICATION_PROVENANCE_SCHEMA_VERSION,
 } from "./provenance.types";
+import { VerificationProvenanceDto } from "./dto/verification-provenance.dto";
 import { createHash } from "crypto";
 
 /**
@@ -271,9 +272,10 @@ export class VerificationProvenanceService {
    * @param provenance Internal provenance record
    * @returns Public-facing response
    */
-  toResponseDto(provenance: VerificationProvenanceRecord): VerificationProvenanceResponseDto {
+  toResponseDto(provenance: VerificationProvenanceRecord): VerificationProvenanceDto {
     return {
       decidedAt: provenance.decidedAt.toISOString(),
+      schemaVersion: provenance.schemaVersion,
       policyVersion: provenance.policyVersion,
       proofStatus: provenance.proofStatus,
       verificationResult: provenance.verificationResult,

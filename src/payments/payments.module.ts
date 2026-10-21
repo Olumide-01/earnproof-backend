@@ -11,14 +11,21 @@ import { PaymentsService } from "./payments.service";
 import { PaymentAccountResolver } from "./payment-account.resolver";
 import { PaymentAccountRotationController } from "./payment-account-rotation.controller";
 import { PaymentAccountRotationService } from "./payment-account-rotation.service";
+import { PaymentBackfillService } from "./payment-backfill.service";
+import { PaymentBackfillsController } from "./payment-backfills.controller";
 import { Clock, SystemClock } from "../common/time/clock";
 
 @Module({
   imports: [AuthModule, StellarModule, QuotasModule],
-  controllers: [PaymentsController, PaymentAccountRotationController],
+  controllers: [
+    PaymentsController,
+    PaymentAccountRotationController,
+    PaymentBackfillsController,
+  ],
   providers: [
     PaymentAccountResolver,
     PaymentAccountRotationService,
+    PaymentBackfillService,
     { provide: Clock, useClass: SystemClock },
     PaymentsService,
     PaymentFinalityService,
@@ -34,6 +41,7 @@ import { Clock, SystemClock } from "../common/time/clock";
     PaymentCheckpointHealthService,
     PaymentAccountResolver,
     PaymentAccountRotationService,
+    PaymentBackfillService,
   ],
 })
 export class PaymentsModule {}

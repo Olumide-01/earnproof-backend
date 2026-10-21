@@ -15,11 +15,12 @@ import { DisputeCategory, DisputeStatus } from "@prisma/client";
  * v1: Initial - includes disputeId, proofId, outcome, reason, participants
  */
 export interface DisputeDecisionNotificationPayload {
+  [key: string]: unknown;
   disputeId: string;
   proofId: string;
   organizationId: string;
   category: DisputeCategory;
-  decisionType: "RESOLVED" | "WITHDRAWN" | "EXPIRED";
+  decisionType: "FILED" | "ASSIGNED" | "RESOLVED" | "WITHDRAWN" | "EXPIRED";
   status: DisputeStatus;
   
   // Resolution details (when decisionType is RESOLVED)

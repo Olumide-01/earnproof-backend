@@ -277,7 +277,7 @@ export class ContractSuccessorService {
         ? Date.now() - new Date(checkpointResults.checkpoint.createdAt).getTime()
         : null;
 
-      const isStale = assessmentAge && assessmentAge > MAX_ASSESSMENT_AGE_MS;
+      const isStale = Boolean(assessmentAge !== null && assessmentAge > MAX_ASSESSMENT_AGE_MS);
       const isReady =
         !blockingUnacknowledged &&
         identityCheckResults.valid &&

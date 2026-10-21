@@ -290,7 +290,7 @@ export class OrganizationExportService {
           data: {
             status: "EXPIRED",
             metadata: {
-              ...receipts[0].metadata,
+              ...((receipts[0].metadata as Record<string, unknown>) ?? {}),
               consumedAt: new Date().toISOString(),
             },
           },

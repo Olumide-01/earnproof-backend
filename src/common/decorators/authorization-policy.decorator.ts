@@ -5,7 +5,7 @@ export const AUTHORIZATION_POLICY_METADATA =
   "earnproof:authorization-policy";
 
 export type AuthorizationAccess = "public" | "authenticated";
-export type AuthorizationOwnership = "none" | "user";
+export type AuthorizationOwnership = "none" | "user" | "organization";
 
 export interface AuthorizationPolicy {
   access: AuthorizationAccess;

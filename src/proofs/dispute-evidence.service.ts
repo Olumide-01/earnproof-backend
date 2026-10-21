@@ -1,4 +1,4 @@
-﻿import {
+import {
   BadRequestException,
   ForbiddenException,
   Injectable,
@@ -330,10 +330,12 @@ export class DisputeEvidenceService {
 
   private validateTransition(from: DisputeStatus, to: DisputeStatus): void {
     const allowed: Record<DisputeStatus, DisputeStatus[]> = {
-      [DisputeStatus.OPEN]:         [DisputeStatus.UNDER_REVIEW, DisputeStatus.REJECTED],
-      [DisputeStatus.UNDER_REVIEW]: [DisputeStatus.RESOLVED, DisputeStatus.REJECTED],
+      [DisputeStatus.OPEN]:         [DisputeStatus.ASSIGNED, DisputeStatus.UNDER_REVIEW, DisputeStatus.REJECTED, DisputeStatus.WITHDRAWN],
+      [DisputeStatus.ASSIGNED]:     [DisputeStatus.UNDER_REVIEW, DisputeStatus.REJECTED, DisputeStatus.WITHDRAWN],
+      [DisputeStatus.UNDER_REVIEW]: [DisputeStatus.RESOLVED, DisputeStatus.REJECTED, DisputeStatus.WITHDRAWN],
       [DisputeStatus.RESOLVED]:     [],
       [DisputeStatus.REJECTED]:     [],
+      [DisputeStatus.WITHDRAWN]:    [],
     };
 
     if (!allowed[from]?.includes(to)) {

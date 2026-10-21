@@ -44,6 +44,10 @@ import { WebhookCircuitStatsDto } from "./dto/webhook-circuit-stats.dto";
 import { WebhookTestDeliveryResponseDto } from "./dto/webhook-test-delivery-response.dto";
 import { UpdateWebhookUrlDto } from "./dto/update-webhook-url.dto";
 import { VerifyWebhookDto } from "./dto/verify-webhook.dto";
+import {
+  ListWebhooksDto,
+  ListWebhookDeliveriesDto,
+} from "./dto/list-webhooks.dto";
 import { WebhooksService } from "./webhooks.service";
 import { WebhookCircuitBreakerService } from "./webhook-circuit-breaker.service";
 import { WebhookDeadLetterService } from "./webhook-dead-letter.service";
@@ -827,7 +831,7 @@ export class WebhooksController {
    */
   @Post("preview-predicate")
   @UseGuards(AuthGuard)
-  @ApiBearerToken()
+  @ApiBearerAuth()
   @Throttle({ default: { limit: 100, ttl: 60_000 } })
   @ApiOperation({
     operationId: "previewPredicate",
@@ -840,11 +844,7 @@ export class WebhooksController {
   @ApiResponse({
     status: HttpStatus.OK,
     description: "Predicate evaluation completed successfully.",
-    type: () => ({
-      match: { type: "boolean" },
-      reason: { type: "string", nullable: true },
-      visitedNodes: { type: "integer" },
-    }),
+    type: PredicatePreviewResponseDto,
   })
   @ApiResponse({
     status: HttpStatus.BAD_REQUEST,
@@ -864,11 +864,8 @@ export class WebhooksController {
   })
   async previewPredicate(
     @CurrentUser() user: AuthenticatedUser,
-    @Body() dto: {
-      predicate: any;
-      event: { resource: string; outcome: string; schemaVersion: string };
-    },
-  ): Promise<{ match: boolean; reason?: string; visitedNodes: number }> {
+    @Body() dto: PredicatePreviewRequestDto,
+  ): Promise<PredicatePreviewResponseDto> {
     const orgId = await this.requireOrgId(user);
     // Authorization check: ensure user's org context (already done by requireOrgId)
     // No webhook-specific check needed; this is a read-only preview endpoint

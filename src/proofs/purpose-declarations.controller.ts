@@ -11,7 +11,8 @@ import {
   UseGuards,
   Query,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags, ApiSecurity } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { SESSION_AUTH_SCHEME } from '../common/swagger/security-schemes';
 import { PurposeDeclarationsService } from './purpose-declarations.service';
 import { PurposeDeclarationResponseDto, CreatePurposeDefinitionDto, CreatePurposeDeclarationDto, ApprovePurposeDeclarationDto, RevokePurposeDeclarationDto, PurposeDefinitionResponseDto } from './dto/purpose-declaration.dto';
 import { AuthenticatedRoute } from '../common/decorators/authorization-policy.decorator';
@@ -25,9 +26,9 @@ import { CurrentOrganization } from '../common/decorators/current-organization.d
  * purpose declarations that organizations must approve before verification
  * runs under policies configured to require them.
  */
-@Controller('api/v1/organizations/:organizationId/purpose-declarations')
+@Controller('organizations/:organizationId/purpose-declarations')
 @ApiTags('Purpose Declarations')
-@ApiSecurity('bearerAuth')
+@ApiBearerAuth(SESSION_AUTH_SCHEME)
 export class PurposeDeclarationsController {
   constructor(private purposeDeclarationsService: PurposeDeclarationsService) {}
 

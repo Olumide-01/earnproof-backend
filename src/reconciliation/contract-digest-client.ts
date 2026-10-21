@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { StructuredLogger } from "../common/logger";
-import { HorizonFault, classifyHorizonFault } from "../stellar/horizon-fault";
+import { HorizonFault } from "../stellar/horizon-fault";
 
 /**
  * Contract state checkpoint digest fetched from live contract.

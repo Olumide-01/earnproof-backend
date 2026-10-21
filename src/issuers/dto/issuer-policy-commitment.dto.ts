@@ -39,7 +39,7 @@ export class IssuerPolicyCommitmentDto {
   @ApiProperty({
     description:
       "Frozen copy of issuer policy at this version. Includes signingKeyVersionId, stellarAddress, publicMetadata, status.",
-    type: "object",
+    type: () => Object,
   })
   policySnapshot: Record<string, unknown>;
 

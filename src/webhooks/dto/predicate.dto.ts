@@ -1,10 +1,9 @@
-import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { ApiExtraModels, ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Type } from "class-transformer";
 import {
   IsArray,
   IsIn,
   IsNotEmpty,
-  IsNull,
   IsOptional,
   IsString,
   ValidateNested,
@@ -41,8 +40,8 @@ export class FieldComparisonDto {
       { type: "string" },
       { type: "number" },
       { type: "boolean" },
-      { type: "null" },
     ],
+    nullable: true,
   })
   @ValidatePredicateValueLength()
   value!: string | number | boolean | null;
@@ -70,7 +69,7 @@ export class FieldInListDto {
 
   @ApiProperty({
     description: "Values list. If field matches any value, predicate matches.",
-    type: [["string", "number", "boolean", "null"]],
+    type: [Object],
     example: ["proof", "attestation"],
   })
   @IsArray()
@@ -176,6 +175,13 @@ export type PredicateExpressionDto =
  * }
  * ```
  */
+@ApiExtraModels(
+  FieldComparisonDto,
+  FieldInListDto,
+  AndExpressionDto,
+  OrExpressionDto,
+  NotExpressionDto,
+)
 export class PredicateDto {
   @ApiProperty({
     description: "Predicate grammar version. Only known versions are accepted.",

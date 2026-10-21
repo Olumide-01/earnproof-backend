@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Interval } from "@nestjs/schedule";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID as uuidv4 } from "crypto";
 import { StructuredLogger } from "../common/logger";
 import { PrismaService } from "../database/prisma.service";
 import { ContractDigestClient } from "./contract-digest-client";
@@ -161,7 +161,7 @@ export class ContractStateReconciliationService {
           detectedAt,
         );
 
-        this.logger.info("Verification failed", {
+        this.logger.log("Verification failed", {
           runId,
           code: digestResult.failure.code,
           network,
@@ -219,7 +219,7 @@ export class ContractStateReconciliationService {
         detectedAt,
       );
 
-      this.logger.info("Checkpoint comparison complete", {
+      this.logger.log("Checkpoint comparison complete", {
         runId,
         network,
         contractId,

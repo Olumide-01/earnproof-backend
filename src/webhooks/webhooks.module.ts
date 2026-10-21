@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
 import { QuotasModule } from "../quotas/quotas.module";
+import { AuditModule } from "../audit/audit.module";
 import { WebhookCircuitBreakerService } from "./webhook-circuit-breaker.service";
 import { WebhookClientCertificateService } from "./webhook-client-certificate.service";
 import { WebhookClientCertificatesController } from "./webhook-client-certificates.controller";
@@ -16,7 +17,7 @@ import { WebhookTlsPostureController } from "./tls-posture/webhook-tls-posture.c
 import { WebhookTlsPostureService } from "./tls-posture/webhook-tls-posture.service";
 
 @Module({
-  imports: [AuthModule, QuotasModule],
+  imports: [AuthModule, QuotasModule, AuditModule],
   controllers: [
     WebhooksController,
     WebhookClientCertificatesController,
@@ -29,6 +30,7 @@ import { WebhookTlsPostureService } from "./tls-posture/webhook-tls-posture.serv
     WebhookClientCertificateService,
     WebhookCircuitBreakerService,
     WebhookDeadLetterService,
+    WebhookVerificationService,
     PredicateEvaluatorService,
     PredicatePreviewService,
     WebhookTlsPostureService,
@@ -38,6 +40,7 @@ import { WebhookTlsPostureService } from "./tls-posture/webhook-tls-posture.serv
     WebhookClientCertificateService,
     WebhookCircuitBreakerService,
     WebhookDeadLetterService,
+    WebhookVerificationService,
     WebhooksService,
     PredicateEvaluatorService,
     PredicatePreviewService,

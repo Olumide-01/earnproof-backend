@@ -11,7 +11,7 @@ import {
   Logger,
   ForbiddenException,
 } from '@nestjs/common';
-import { AuthenticatedRoute } from '../auth/authentication.decorator';
+import { AuthenticatedRoute } from '../common/decorators/authorization-policy.decorator';
 import { RequiredOrganizationRole } from './decorators/required-organization-role.decorator';
 import { OrganizationMemberRole } from '@prisma/client';
 import { InvitationDeliverySuppressionService } from './invitation-delivery-suppression.service';
@@ -78,7 +78,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Post('suppressions')
-  @AuthenticatedRoute('invitation:suppression:write')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   @HttpCode(HttpStatus.CREATED)
   async addSuppression(
@@ -108,7 +108,7 @@ export class InvitationDeliveryController {
     return {
       id: suppression.id,
       reason: suppression.reason,
-      suppressedAt: suppression.suppressedAt,
+      suppressedAt: suppression.createdAt,
       expiresAt: suppression.expiresAt,
       message: 'Recipient added to suppression list',
     };
@@ -119,7 +119,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Delete('suppressions')
-  @AuthenticatedRoute('invitation:suppression:write')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   async removeSuppression(
@@ -160,7 +160,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only (suppression list cannot be enumerated by non-admins).
    */
   @Post('suppressions/check')
-  @AuthenticatedRoute('invitation:suppression:read')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   async checkSuppression(
@@ -175,7 +175,19 @@ export class InvitationDeliveryController {
     return {
       email: dto.email,
       isSuppressed: !!suppression,
-      suppression: suppression || undefined,
+      suppression: suppression
+        ? {
+            id: suppression.id,
+            organizationId: suppression.organizationId,
+            reason: suppression.reason,
+            sourceOutcome: (suppression.source as any) || undefined,
+            suppressedAt: suppression.createdAt,
+            expiresAt: suppression.expiresAt ?? undefined,
+            note: suppression.details ?? undefined,
+            createdAt: suppression.createdAt,
+            updatedAt: suppression.updatedAt,
+          }
+        : undefined,
       message: suppression ? 'Recipient is suppressed' : 'Recipient is not suppressed',
     };
   }
@@ -185,7 +197,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Get('suppressions')
-  @AuthenticatedRoute('invitation:suppression:read')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   async listSuppressions(
     @Param('organizationId') organizationId: string,
@@ -209,7 +221,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Get('suppressions/stats')
-  @AuthenticatedRoute('invitation:suppression:read')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   async getSuppressionStats(
     @Param('organizationId') organizationId: string,
@@ -226,7 +238,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Post('limits/check')
-  @AuthenticatedRoute('invitation:limits:read')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   async checkLimits(
@@ -249,7 +261,13 @@ export class InvitationDeliveryController {
     return {
       email: dto.email,
       organizationId,
-      ...checks,
+      resendCooldownOk: checks.resendCooldownOk,
+      resendCooldownReason: checks.resendCooldownReason ?? undefined,
+      hourlyLimitOk: checks.hourlyLimitOk,
+      hourlyLimitReason: checks.hourlyLimitReason ?? undefined,
+      dailyQuotaOk: checks.dailyQuotaOk,
+      dailyQuotaReason: checks.dailyQuotaReason ?? undefined,
+      overrideActive: checks.overrideActive,
       canDeliver,
       blockedReason,
     };
@@ -260,7 +278,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Get('limits/stats')
-  @AuthenticatedRoute('invitation:limits:read')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   async getLimitStats(
     @Param('organizationId') organizationId: string,
@@ -273,7 +291,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only (allows bypass for exceptional cases).
    */
   @Post('limits/reset')
-  @AuthenticatedRoute('invitation:limits:write')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   async resetLimits(
@@ -299,7 +317,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Post('outcomes/record')
-  @AuthenticatedRoute('invitation:outcomes:write')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   @HttpCode(HttpStatus.CREATED)
   async recordOutcome(
@@ -335,7 +353,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Get('outcomes/stats')
-  @AuthenticatedRoute('invitation:outcomes:read')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   async getOutcomeStats(
     @Param('organizationId') organizationId: string,
@@ -349,7 +367,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Get('outcomes/abuse-patterns')
-  @AuthenticatedRoute('invitation:outcomes:read')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   async detectAbusePatterns(
     @Param('organizationId') organizationId: string,
@@ -366,7 +384,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Post('overrides')
-  @AuthenticatedRoute('invitation:overrides:write')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   @HttpCode(HttpStatus.CREATED)
   async createOverride(
@@ -400,7 +418,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Post('overrides/:overrideId/revoke')
-  @AuthenticatedRoute('invitation:overrides:write')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   async revokeOverride(
@@ -433,7 +451,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Post('overrides/active')
-  @AuthenticatedRoute('invitation:overrides:read')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   async getActiveOverrides(
@@ -457,7 +475,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Get('overrides')
-  @AuthenticatedRoute('invitation:overrides:read')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   async listOverrides(
     @Param('organizationId') organizationId: string,
@@ -483,7 +501,7 @@ export class InvitationDeliveryController {
    * ADMIN+ only.
    */
   @Get('overrides/stats')
-  @AuthenticatedRoute('invitation:overrides:read')
+  @AuthenticatedRoute({ ownership: 'organization' })
   @RequiredOrganizationRole(OrganizationMemberRole.ADMIN)
   async getOverrideStats(
     @Param('organizationId') organizationId: string,

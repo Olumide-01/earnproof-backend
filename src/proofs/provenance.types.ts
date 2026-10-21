@@ -90,6 +90,7 @@ export interface VerificationProvenanceRecord {
   sources: {
     sourceType: VerificationProvenanceSourceType;
     sourceId: string;
+    sourceLabel?: string;
     observedAt: Date;
     sourceHash: string;
     observationOrder: number;
@@ -107,6 +108,9 @@ export interface VerificationProvenanceRecord {
 export interface VerificationProvenanceResponseDto {
   /** Decision timestamp */
   decidedAt: string;
+
+  /** Versioned schema */
+  schemaVersion: string;
 
   /** Policy version applied */
   policyVersion: string;

@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
 import { AuditModule } from "../audit/audit.module";
+import { QuotasModule } from "../quotas/quotas.module";
 import { Clock, SystemClock } from "../common/time/clock";
 import { DatabaseModule } from "../database/database.module";
 import { JobsModule } from "../jobs/jobs.module";
@@ -19,7 +20,7 @@ import { RoleApprovalPolicyController } from "./role-approval-policy/role-approv
 import { RoleApprovalPolicyService } from "./role-approval-policy/role-approval-policy.service";
 
 @Module({
-  imports: [DatabaseModule, AuthModule, JobsModule],
+  imports: [DatabaseModule, AuthModule, JobsModule, QuotasModule],
   controllers: [
     OrganizationsController,
     OrganizationLifecycleController,
@@ -42,6 +43,7 @@ import { RoleApprovalPolicyService } from "./role-approval-policy/role-approval-
     OrganizationsService,
     OrganizationLifecycleService,
     OrganizationMembersService,
+    OrganizationMemberGuard,
     OrganizationReadinessService,
     MembershipImportService,
     AccessReviewService,

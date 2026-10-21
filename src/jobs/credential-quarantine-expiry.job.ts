@@ -36,7 +36,8 @@ export class CredentialQuarantineExpiryJob {
       const count = await this.quarantineService.expireQuarantineRecords();
       this.logger.log(`Expired ${count} quarantine record(s) in this run`);
     } catch (error) {
-      this.logger.error(`Failed to expire quarantine records: ${error.message}`, error.stack);
+      const err = error as Error;
+      this.logger.error(`Failed to expire quarantine records: ${err.message}`, err.stack);
       // Don't rethrow; allow job to continue on next interval
     }
   }

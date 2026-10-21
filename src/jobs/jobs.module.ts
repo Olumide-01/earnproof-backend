@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { AuthModule } from "../auth/auth.module";
 import { ApiKeysModule } from "../api-keys/api-keys.module";
 import { ApprovalsModule } from "../approvals/approvals.module";
 import { DisclosureModule } from "../common/disclosure/disclosure.module";
@@ -36,6 +37,7 @@ import { ApiKeyExpirationJob } from "./api-key-expiration.job";
 
 @Module({
   imports: [
+    AuthModule,
     ApprovalsModule,
     IssuersModule,
     PaymentsModule,

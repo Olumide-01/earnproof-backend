@@ -115,37 +115,8 @@ export class AnchoringReconcilerService {
       orderBy: { updatedAt: "asc" },
     });
 
-    if (!leaseResult.acquired) {
-      this.logger.debug(
-        `Anchoring reconciliation lease held by another instance (${leaseResult.owner}); skipping reconciliation`,
-      );
-      return;
-    }
-
-    try {
-      const proofs = await this.prisma.proof.findMany({
-        where: {
-          contractTransactionHash: { not: null },
-          status: { in: [ProofStatus.ACTIVE, ProofStatus.REVOKED] },
-        },
-        select: {
-          id: true,
-          status: true,
-          contractTransactionHash: true,
-        },
-        take: RECONCILE_BATCH_SIZE,
-        orderBy: { updatedAt: "asc" },
-      });
-
-      for (const proof of proofs) {
-        await this.reconcileProof(proof);
-      }
-    } finally {
-      // Renewal: extend the lease before exiting
-      await this.leaseService.renewLease(
-        ANCHORING_RECONCILIATION_JOB_NAME,
-        ANCHORING_RECONCILIATION_LEASE_DURATION_MS,
-      );
+    for (const proof of proofs) {
+      await this.reconcileProof(proof);
     }
   }
 

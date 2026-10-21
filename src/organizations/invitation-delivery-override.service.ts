@@ -112,7 +112,7 @@ export class InvitationDeliveryOverrideService {
         });
 
       if (existingOverride) {
-        this.logger.info(
+        this.logger.log(
           `Override already active: org=${organizationId}, id=${existingOverride.id}`,
         );
         return existingOverride;
@@ -133,14 +133,14 @@ export class InvitationDeliveryOverrideService {
         },
       });
 
-      this.logger.info(
+      this.logger.log(
         `Override created: org=${organizationId}, id=${override.id}, type=${overrideType}`,
       );
 
       return override;
     } catch (error) {
       this.logger.error(
-        `Failed to create override for org=${organizationId}: ${error.message}`,
+        `Failed to create override for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -178,17 +178,17 @@ export class InvitationDeliveryOverrideService {
         );
       }
 
-      this.logger.info(
+      this.logger.log(
         `Override revoked: org=${organizationId}, id=${overrideId}`,
       );
 
       return override;
     } catch (error) {
-      if (error.code === 'P2025') {
+      if ((error as any).code === 'P2025') {
         throw new BadRequestException('Override not found');
       }
       this.logger.error(
-        `Failed to revoke override for org=${organizationId}: ${error.message}`,
+        `Failed to revoke override for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -225,7 +225,7 @@ export class InvitationDeliveryOverrideService {
       return overrides;
     } catch (error) {
       this.logger.error(
-        `Failed to get overrides for org=${organizationId}: ${error.message}`,
+        `Failed to get overrides for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -262,7 +262,7 @@ export class InvitationDeliveryOverrideService {
       return overrides;
     } catch (error) {
       this.logger.error(
-        `Failed to list overrides for org=${organizationId}: ${error.message}`,
+        `Failed to list overrides for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -351,7 +351,7 @@ export class InvitationDeliveryOverrideService {
       };
     } catch (error) {
       this.logger.error(
-        `Failed to get override stats for org=${organizationId}: ${error.message}`,
+        `Failed to get override stats for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -374,11 +374,11 @@ export class InvitationDeliveryOverrideService {
         },
       });
 
-      this.logger.info(`Cleaned up ${result.count} expired overrides`);
+      this.logger.log(`Cleaned up ${result.count} expired overrides`);
       return result.count;
     } catch (error) {
       this.logger.error(
-        `Failed to clean up expired overrides: ${error.message}`,
+        `Failed to clean up expired overrides: ${(error as Error).message}`,
       );
       throw error;
     }
@@ -420,7 +420,7 @@ export class InvitationDeliveryOverrideService {
       }));
     } catch (error) {
       this.logger.error(
-        `Failed to get recent creators for org=${organizationId}: ${error.message}`,
+        `Failed to get recent creators for org=${organizationId}: ${(error as Error).message}`,
       );
       throw error;
     }

@@ -348,6 +348,8 @@ model User {
   quarantineAuditEvents   CredentialQuarantineAudit[] @relation("quarantine_audit_actor")
   proofExpirationReminderDeliveries ProofExpirationReminderDelivery[]
   sessionRiskEvents       SessionRiskEvent[]
+  paymentAccountRotations PaymentAccountRotation[]
+  paymentMonitoredAccounts PaymentMonitoredAccount[]
   declarationsApproved    PurposeDeclaration[]  @relation("declaration_approvedBy")
   declarationsRevoked     PurposeDeclaration[]  @relation("declaration_revokedBy")
   auditEntries            DeclarationAuditEntry[]
@@ -491,6 +493,13 @@ model Organization {
   roleApprovalPolicies OrganizationRoleApprovalPolicy[]
   auditLegalHolds      AuditLegalHold[]
   secretRetrievalReceipts SecretRetrievalReceipt[]
+  invitationDeliverySuppressions   InvitationDeliverySuppression[]
+  invitationDeliveryOutcomes       InvitationDeliveryOutcomeRecord[]
+  invitationResendCooldowns        InvitationResendCooldown[]
+  invitationResendAttemptWindows   InvitationResendAttemptWindow[]
+  invitationDeliveryQuota          InvitationDeliveryQuota?
+  invitationDeliveryOverrides      InvitationDeliveryOverride[]
+  invitationDeliveryAuditEvents    InvitationDeliveryAuditEvent[]
 
   @@index([status])
   @@index([archivedAt])
@@ -557,6 +566,7 @@ model IdempotencyRecord {
   @@unique([organizationId, idempotencyKey])
   @@index([organizationId, expiresAt])
   @@index([organizationId, resourceType, resourceId])
+  @@map("idempotency_records")
 }
 
 model Issuer {
@@ -923,6 +933,7 @@ model Proof {
   sharingEvents           ProofSharingEvent[]
   disclosureReceipts      DisclosureReceipt[]
   disputes                ProofDispute[]
+  compatibilityAssessments ContractCompatibilityAssessment[]
   expirationReminderDeliveries ProofExpirationReminderDelivery[]
 
   @@index([userId, status])
@@ -1333,7 +1344,7 @@ model WebhookDelivery {
   attempt           Int                   @default(1)
   status            WebhookDeliveryStatus @default(PENDING)
   statusCode        Int?
-  responseBody      String?
+  responseBody      Json?
   durationMs        Int?
   failureReason     String?
   replayOf          String?
@@ -2248,8 +2259,17 @@ model ReconciliationConflict {
 enum DisputeStatus {
   OPEN
   ASSIGNED
+  UNDER_REVIEW
   RESOLVED
+  REJECTED
   WITHDRAWN
+}
+
+enum DisputeEvidenceRole {
+  PROOF_OWNER
+  ISSUER
+  ADMIN
+  VERIFIER
 }
 
 enum DisputeCategory {
@@ -2269,21 +2289,25 @@ enum CredentialVerificationKeyTrustPinStatus {
 /// Proof dispute workflow for business/audit review process.
 /// This is separate from cryptographic verification - disputes are business workflow.
 model ProofDispute {
-  id                 String          @id @default(cuid())
+  id                 String                    @id @default(cuid())
   /// Organization that owns this dispute (tenant isolation).
-  organizationId     String
-  organization       Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  organizationId     String?
+  organization       Organization?             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   /// Proof being disputed.
   proofId            String
-  proof              Proof           @relation(fields: [proofId], references: [id], onDelete: Restrict)
+  proof              Proof                     @relation(fields: [proofId], references: [id], onDelete: Restrict)
   /// Dispute category for classification.
-  category           DisputeCategory
+  category           DisputeCategory?
   /// Current lifecycle status.
-  status             DisputeStatus   @default(OPEN)
+  status             DisputeStatus             @default(OPEN)
+  /// Short reason code — never free-form user input.
+  reason             String?
+  /// SHA-256 of the opener's wallet hash — never raw wallet address.
+  openerHash         String?
   /// Hash/commitment of evidence (not raw evidence).
   evidenceCommitment String?
   /// Actor who submitted the dispute.
-  submittedBy        String
+  submittedBy        String?
   /// Actor assigned to review (if assigned).
   assignedTo         String?
   /// Resolution outcome/reason.
@@ -2292,8 +2316,9 @@ model ProofDispute {
   resolutionReason   String?
   /// Actor who resolved the dispute.
   resolvedBy         String?
+  resolution         String?
   /// When dispute was submitted.
-  submittedAt        DateTime        @default(now())
+  submittedAt        DateTime                  @default(now())
   /// When dispute was assigned (if assigned).
   assignedAt         DateTime?
   /// When dispute was resolved (if resolved).
@@ -2302,6 +2327,9 @@ model ProofDispute {
   withdrawnAt        DateTime?
   /// Additional metadata (bounded).
   metadata           Json?
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+  manifests          DisputeEvidenceManifest[]
 
   @@unique([proofId, category, status], name: "one_active_dispute_per_proof_category", map: "proof_dispute_unique_active")
   @@index([organizationId])
@@ -3493,4 +3521,781 @@ model WebhookTlsProbe {
 
   @@index([webhookId, probedAt])
   @@index([outcome, probedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Operational metric downsampling and tiered retention (#330)
+// See docs/metrics-rollups.md.
+// ---------------------------------------------------------------------------
+
+enum OperationalMetricKind {
+  DELTA_GAUGE
+  COUNTER
+  HISTOGRAM
+}
+
+enum OperationalMetricTier {
+  MINUTE
+  HOUR
+  DAY
+}
+
+/// One per-series delta captured from a process's metrics registry. Short-lived:
+/// deleted once its minute is rolled up and past raw retention.
+model OperationalMetricContribution {
+  id           String                @id @default(cuid())
+  /// Random per-process identity. Never a hostname, user or tenant.
+  sourceId     String                @db.VarChar(64)
+  captureSeq   Int
+  metric       String                @db.VarChar(64)
+  kind         OperationalMetricKind
+  /// Canonical sorted "k=v,k2=v2" string. Bounded length.
+  seriesKey    String                @db.VarChar(512)
+  bucketStart  DateTime
+  sum          Float
+  count        Int?
+  bucketCounts Json?
+  capturedAt   DateTime
+  createdAt    DateTime              @default(now())
+
+  @@unique([sourceId, captureSeq, metric, seriesKey])
+  @@index([bucketStart])
+  @@index([metric, seriesKey, bucketStart])
+}
+
+/// A sealed aggregate over one time bucket at one retention tier.
+model OperationalMetricRollup {
+  id           String                @id @default(cuid())
+  tier         OperationalMetricTier
+  metric       String                @db.VarChar(64)
+  kind         OperationalMetricKind
+  seriesKey    String                @db.VarChar(512)
+  bucketStart  DateTime
+  sum          Float
+  count        Int?
+  bucketCounts Json?
+  /// Inputs folded in (contributions, or lower-tier buckets weighted by theirs).
+  sampleCount  Int
+  computedAt   DateTime
+
+  @@unique([tier, metric, seriesKey, bucketStart])
+  @@index([tier, bucketStart])
+}
+
+/// Exclusive end of the newest bucket rolled up per tier. Only ever moves forward.
+model OperationalMetricWatermark {
+  tier          OperationalMetricTier @id
+  rolledThrough DateTime
+  updatedAt     DateTime              @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Configuration rollout snapshots and canaries (#329)
+// See docs/config-rollouts.md. Snapshots are append-only and never contain
+// secret values; excluded paths are recorded by name and reason only.
+// ---------------------------------------------------------------------------
+
+enum ConfigSnapshotOrigin {
+  CAPTURED
+  IMPORTED
+}
+
+/// Immutable, signed snapshot of one environment's effective configuration.
+model ConfigSnapshot {
+  id             String               @id @default(cuid())
+  environment    String               @db.VarChar(32)
+  origin         ConfigSnapshotOrigin
+  schemaVersion  String               @db.VarChar(64)
+  /// sha256 over environment, entries and exclusions (not the capture time).
+  contentHash    String               @db.VarChar(80)
+  capturedAt     DateTime
+  entries        Json
+  excluded       Json
+  signatureAlg   String               @db.VarChar(32)
+  signatureKeyId String               @db.VarChar(64)
+  signature      String               @db.VarChar(128)
+  createdById    String?
+  createdAt      DateTime             @default(now())
+  rollouts         ConfigRollout[]    @relation("RolloutSnapshot")
+  baselineRollouts ConfigRollout[]    @relation("RolloutBaseline")
+
+  @@unique([environment, contentHash])
+  @@index([environment, capturedAt])
+}
+
+enum ConfigRolloutStatus {
+  CANARY
+  BLOCKED
+  COMPLETED
+  ROLLED_BACK
+}
+
+/// A staged rollout of a snapshot into an environment, gated per stage.
+model ConfigRollout {
+  id                  String              @id
+  environment         String              @db.VarChar(32)
+  snapshotId          String
+  snapshot            ConfigSnapshot      @relation("RolloutSnapshot", fields: [snapshotId], references: [id])
+  baselineSnapshotId  String?
+  baselineSnapshot    ConfigSnapshot?     @relation("RolloutBaseline", fields: [baselineSnapshotId], references: [id])
+  status              ConfigRolloutStatus @default(CANARY)
+  stages              Int[]
+  stageIndex          Int                 @default(0)
+  stageStartedAt      DateTime
+  lastGateEventId     String?
+  lastGatePassed      Boolean?
+  lastGateEvaluatedAt DateTime?
+  /// Equals `environment` while the rollout is open, NULL otherwise: at most
+  /// one open rollout per environment, enforced by the unique index.
+  openEnvironmentKey  String?             @unique @db.VarChar(32)
+  /// Optimistic concurrency guard: every transition must match the version it read.
+  version             Int                 @default(0)
+  createdById         String
+  completedAt         DateTime?
+  rolledBackAt        DateTime?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  events              ConfigRolloutEvent[]
+
+  @@index([environment, status])
+}
+
+enum ConfigRolloutEventType {
+  CREATED
+  GATE_PASSED
+  GATE_FAILED
+  PROMOTED
+  COMPLETED
+  ROLLED_BACK
+}
+
+/// Append-only decision record: gate evidence, promotions, rollbacks.
+model ConfigRolloutEvent {
+  id         String                 @id
+  rolloutId  String
+  rollout    ConfigRollout          @relation(fields: [rolloutId], references: [id], onDelete: Cascade)
+  type       ConfigRolloutEventType
+  stageIndex Int
+  percent    Int
+  actorId    String
+  /// Codes, ids, numbers and timestamps only. Never configuration values.
+  evidence   Json
+  createdAt  DateTime
+
+  @@index([rolloutId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Payment account rotation and checkpoint handoff (#321)
+// See docs/payment-account-rotation.md. Public account ids only: no secret
+// key, seed or signature is ever stored.
+// ---------------------------------------------------------------------------
+
+enum PaymentAccountRotationStatus {
+  PENDING_VERIFICATION
+  VERIFIED
+  ACTIVATED
+  ROLLED_BACK
+  CANCELLED
+  EXPIRED
+  FAILED
+}
+
+/// A request to change the Stellar account whose payments are indexed for a user.
+model PaymentAccountRotation {
+  id                   String                       @id
+  userId               String
+  user                 User                         @relation(fields: [userId], references: [id])
+  /// Network name and passphrase the challenge was bound to.
+  network              String                       @db.VarChar(32)
+  networkPassphrase    String                       @db.VarChar(128)
+  fromAccountId        String                       @db.VarChar(56)
+  toAccountId          String                       @db.VarChar(56)
+  status               PaymentAccountRotationStatus @default(PENDING_VERIFICATION)
+  challengeMessage     String
+  nonceHash            String                       @db.VarChar(64)
+  expiresAt            DateTime
+  consumedAt           DateTime?
+  verifiedAt           DateTime?
+  /// Requested lower bound for backfilling the new account's prior history.
+  backfillFromLedger   Int?
+  /// Final verified checkpoint of the old account, captured at activation.
+  finalPagingToken     String?
+  finalOperationId     String?
+  finalTransactionHash String?
+  finalLedgerSequence  Int?
+  finalLedgerHash      String?
+  finalVerifiedAt      DateTime?
+  /// Backfill plan for the new account: inclusive ledger range, or NULL for none.
+  backfillStartLedger  Int?
+  backfillEndLedger    Int?
+  backfillJobId        String?
+  fromEpochId          String?
+  toEpochId            String?
+  activatedAt          DateTime?
+  rollbackDeadline     DateTime?
+  rolledBackAt         DateTime?
+  /// Bounded code, never free text.
+  rollbackReason       String?                      @db.VarChar(64)
+  /// Bounded code, never a signature, address or raw error.
+  failureReason        String?                      @db.VarChar(64)
+  /// Equals userId while the rotation is open: at most one open rotation per user.
+  openUserKey          String?                      @unique
+  /// Optimistic concurrency guard for activation, cancellation and rollback.
+  version              Int                          @default(0)
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+
+  @@index([userId, createdAt])
+}
+
+enum PaymentMonitoredAccountStatus {
+  ACTIVE
+  RETIRED
+}
+
+/// One epoch of a user's monitored payment account on one network. Absent for
+/// users who never rotated: their wallet address is the monitored account.
+model PaymentMonitoredAccount {
+  id                    String                        @id
+  userId                String
+  user                  User                          @relation(fields: [userId], references: [id])
+  network               String                        @db.VarChar(32)
+  accountId             String                        @db.VarChar(56)
+  status                PaymentMonitoredAccountStatus
+  activatedAt           DateTime
+  retiredAt             DateTime?
+  rotationId            String?
+  /// "<userId>:<network>" while ACTIVE: one active account per user and network.
+  activeUserKey         String?                       @unique
+  /// "<network>:<accountId>" while ACTIVE: an account is monitored for one user.
+  activeAccountKey      String?                       @unique
+  createdAt             DateTime                      @default(now())
+  updatedAt             DateTime                      @updatedAt
+
+  @@index([userId, network, activatedAt])
+}
+
+/// Database-backed distributed lease for scheduled job coordination.
+model JobLease {
+  id              String   @id @default(cuid())
+  jobName         String   @unique
+  owner           String
+  expiresAt       DateTime
+  lastHeartbeatAt DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([jobName, expiresAt])
+}
+
+enum RevocationCheckpointStatus {
+  ACCEPTED
+  QUARANTINED
+}
+
+enum RevocationCheckpointQuarantineReason {
+  LOWER_SEQUENCE
+  SEQUENCE_CONFLICT
+  STALE_OBSERVED_TIME
+  MALFORMED_INPUT
+  ALGORITHM_UNKNOWN
+  WRONG_CONTRACT_ID
+  WRONG_LEDGER
+  REPLAY_DUPLICATE
+}
+
+model RevocationCheckpoint {
+  id                      String                                  @id @default(cuid())
+  ledger                  String
+  contractIdentity        String
+  algorithm               String
+  sequence                BigInt
+  root                    String
+  observedAt              DateTime
+  status                  RevocationCheckpointStatus              @default(ACCEPTED)
+  acceptedAt              DateTime                                @default(now())
+  quarantineReason        RevocationCheckpointQuarantineReason?
+  quarantineDetails       String?
+  quarantinedAt           DateTime?
+  createdAt               DateTime                                @default(now())
+  updatedAt               DateTime                                @updatedAt
+
+  @@unique([ledger, contractIdentity, algorithm, sequence, root], name: "checkpoint_idempotency")
+  @@index([ledger, contractIdentity, algorithm, status, sequence], name: "stream_head_query")
+  @@index([status, quarantineReason])
+  @@index([observedAt])
+}
+
+model RevocationCheckpointStreamHead {
+  id                    String    @id @default(cuid())
+  ledger                String
+  contractIdentity      String
+  algorithm             String
+  sequence              BigInt
+  root                  String
+  observedAt            DateTime
+  acceptedAt            DateTime
+  version               Int       @default(0)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([ledger, contractIdentity, algorithm], name: "stream_unique")
+  @@index([ledger, contractIdentity, algorithm, sequence])
+}
+
+model ContractStateCheckpointMismatch {
+  id               String   @id @default(cuid())
+  network          String
+  contractId       String
+  checkpointNumber String
+  digestVersion    String
+  componentName    String
+  expectedValue    String
+  observedValue    String
+  detectionTime    DateTime
+  runId            String
+  createdAt        DateTime @default(now())
+
+  @@unique([network, contractId, checkpointNumber, digestVersion, componentName, runId], name: "ContractStateCheckpointMismatch_unique_per_run")
+  @@index([network, contractId, checkpointNumber])
+  @@index([network, createdAt])
+  @@index([runId])
+}
+
+model ContractStateVerificationFailure {
+  id             String   @id @default(cuid())
+  network        String
+  contractId     String
+  digestVersion  String?
+  failureCode    String
+  failureMessage String
+  detectionTime  DateTime
+  runId          String
+  createdAt      DateTime @default(now())
+
+  @@index([network, contractId])
+  @@index([network, createdAt])
+  @@index([runId])
+}
+
+model ContractStateReconciliationRun {
+  id                 String   @id @default(cuid())
+  network            String
+  contractId         String
+  checkpointNumber   String
+  digestVersion      String?
+  runId              String   @unique
+  verificationStatus String
+  comparisonStatus   String?
+  mismatchCount      Int?
+  detectedAt         DateTime
+  createdAt          DateTime @default(now())
+
+  @@index([network, contractId, detectedAt(sort: Desc)])
+}
+
+model DisputeEvidenceManifest {
+  id                      String              @id @default(cuid())
+  disputeId               String
+  dispute                 ProofDispute        @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  version                 String
+  manifestHash            String              @unique
+  submitterRole           DisputeEvidenceRole
+  submitterHash           String
+  algorithms              Json
+  storageRefs             Json
+  contractTransactionHash String?
+  contractConfirmedAt     DateTime?
+  createdAt               DateTime            @default(now())
+
+  @@index([disputeId])
+  @@index([manifestHash])
+  @@index([submitterRole])
+}
+
+enum AssessmentStatus {
+  PENDING
+  RUNNING
+  COMPLETE
+  FAILED
+}
+
+enum FindingSeverity {
+  BLOCKING
+  WARNING
+  INFO
+}
+
+enum CompatibilityCheckKind {
+  ABI
+  STORAGE
+  DEPENDENCY
+  CLIENT
+  MIGRATION
+}
+
+model ContractCompatibilityAssessment {
+  id                  String           @id @default(cuid())
+  proofId             String
+  proof               Proof            @relation(fields: [proofId], references: [id])
+  version             String
+  findingsHash        String?          @unique
+  status              AssessmentStatus @default(PENDING)
+  requestedBy         String
+  artifactVersion     String
+  hasBlockingFindings Boolean          @default(false)
+  findings            Json?
+  lastErrorSafe       String?
+  completedAt         DateTime?
+  createdAt           DateTime         @default(now())
+
+  @@index([proofId])
+  @@index([status])
+  @@index([requestedBy])
+}
+
+enum CapacityResourceType {
+  ISSUER
+  SCHEMA
+  PROOF
+  STORAGE
+}
+
+enum AlertState {
+  CLEAR
+  WARNING
+  CRITICAL
+  STALE
+}
+
+model RegistryCapacitySample {
+  id           String               @id @default(cuid())
+  resourceType CapacityResourceType
+  count        BigInt
+  sampleHash   String               @unique
+  sampledAt    DateTime
+  createdAt    DateTime             @default(now())
+
+  @@index([resourceType, sampledAt])
+  @@index([sampledAt])
+}
+
+model PermissionChangeDiff {
+  id          String   @id @default(cuid())
+  version     String
+  subjectId   String
+  subjectKind String
+  actorHash   String
+  before      Json
+  after       Json
+  changes     Json
+  diffHash    String   @unique
+  auditLogId  String?
+  changedAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([subjectId, changedAt])
+  @@index([subjectKind, changedAt])
+  @@index([diffHash])
+}
+
+model EncryptionKeyRewrapIntent {
+  id                     String                    @id @default(cuid())
+  sourceKeyVersion       Int
+  targetKeyVersion       Int
+  status                 EncryptionKeyRewrapStatus @default(PENDING)
+  processedCount         Int                       @default(0)
+  totalCount             Int?
+  lastProcessedPaymentId String?
+  attemptCount           Int                       @default(0)
+  lastAttemptAt          DateTime?
+  nextRetryAt            DateTime?
+  lastErrorSafe          String?
+  permanentError         Boolean                   @default(false)
+  createdAt              DateTime                  @default(now())
+  updatedAt              DateTime                  @updatedAt
+
+  @@unique([sourceKeyVersion, targetKeyVersion])
+  @@index([nextRetryAt])
+  @@index([status])
+}
+
+model EncryptionKeyRetirementIntent {
+  id                    String                        @id @default(cuid())
+  keyVersion            Int                           @unique
+  status                EncryptionKeyRetirementStatus @default(PENDING)
+  dependentPaymentCount Int                           @default(0)
+  attemptCount          Int                           @default(0)
+  lastAttemptAt         DateTime?
+  nextRetryAt           DateTime?
+  lastErrorSafe         String?
+  permanentError        Boolean                       @default(false)
+  createdAt             DateTime                      @default(now())
+  updatedAt             DateTime                      @updatedAt
+
+  @@index([nextRetryAt])
+  @@index([status])
+}
+
+enum InvitationDeliveryOutcome {
+  DELIVERED
+  BOUNCED
+  COMPLAINED
+  FAILED
+  REJECTED_SUPPRESSED
+  REJECTED_RATE_LIMITED
+  REJECTED_QUOTA_EXCEEDED
+}
+
+enum InvitationOverrideReason {
+  COMPLIANCE_REVIEW
+  CUSTOMER_REQUEST
+  FRAUD_INVESTIGATION
+  SYSTEM_RECOVERY
+  FALSE_POSITIVE_CORRECTION
+}
+
+model InvitationDeliverySuppression {
+  id                 String       @id @default(cuid())
+  organizationId     String
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recipientEmailHash String
+  reason             String
+  source             String       @default("BOUNCE")
+  details            String?
+  expiresAt          DateTime?
+  clearedAt          DateTime?
+  clearedById        String?
+  clearReason        String?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@unique([organizationId, recipientEmailHash])
+  @@index([organizationId, expiresAt])
+}
+
+model InvitationDeliveryOutcomeRecord {
+  id                 String                    @id @default(cuid())
+  organizationId     String
+  organization       Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recipientEmailHash String
+  invitationId       String
+  outcome            InvitationDeliveryOutcome
+  outcomeCode        String?
+  details            String?
+  attemptCount       Int                       @default(1)
+  attemptedAt        DateTime                  @default(now())
+  expiresAt          DateTime
+  createdAt          DateTime                  @default(now())
+
+  @@index([organizationId, recipientEmailHash, createdAt])
+  @@index([organizationId, outcome, attemptedAt])
+  @@index([expiresAt])
+}
+
+model InvitationResendCooldown {
+  id                 String       @id @default(cuid())
+  organizationId     String
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recipientEmailHash String
+  lastSentAt         DateTime
+  availableAt        DateTime
+  reason             String?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@unique([organizationId, recipientEmailHash])
+  @@index([organizationId, availableAt])
+}
+
+model InvitationResendAttemptWindow {
+  id                 String       @id @default(cuid())
+  organizationId     String
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recipientEmailHash String
+  windowStart        DateTime
+  attemptCount       Int          @default(0)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@unique([organizationId, recipientEmailHash, windowStart])
+  @@index([organizationId, windowStart])
+}
+
+model InvitationDeliveryQuota {
+  organizationId String       @id
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  windowStart    DateTime
+  count          Int          @default(0)
+  limit          Int?
+  updatedAt      DateTime     @updatedAt
+
+  @@index([organizationId, windowStart])
+}
+
+model InvitationDeliveryOverride {
+  id                 String                   @id @default(cuid())
+  organizationId     String
+  organization       Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recipientEmailHash String
+  overrideType       String
+  reason             InvitationOverrideReason
+  authorizedById     String
+  authorizedAt       DateTime
+  assertionTokenHash String
+  description        String?                  @db.VarChar(1000)
+  expiresAt          DateTime?
+  revokedAt          DateTime?
+  revokedById        String?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  @@index([organizationId, recipientEmailHash])
+  @@index([organizationId, overrideType, expiresAt])
+  @@index([authorizedById, createdAt])
+  @@index([expiresAt])
+}
+
+model InvitationDeliveryAuditEvent {
+  id                 String       @id @default(cuid())
+  organizationId     String
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  action             String
+  recipientEmailHash String?
+  actorId            String
+  overrideReason     String?
+  metadata           Json?
+  occurredAt         DateTime     @default(now())
+  createdAt          DateTime     @default(now())
+
+  @@index([organizationId, action, occurredAt])
+  @@index([actorId, occurredAt])
+}
+
+enum HealthIncidentStatus {
+  HEALTHY
+  UNHEALTHY
+  ACKNOWLEDGED
+  RECOVERED
+}
+
+enum HealthIncidentReasonCode {
+  PROBE_TIMEOUT
+  PROBE_ERROR
+  PROBE_DEGRADED
+  SUSTAINED_FAILURE
+  SUSTAINED_RECOVERY
+  OPERATOR_ACKNOWLEDGED
+}
+
+model HealthTransition {
+  id                    String                   @id @default(cuid())
+  incidentId            String
+  incident              HealthIncident           @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  reason                HealthIncidentReasonCode
+  status                HealthIncidentStatus
+  probeCount            Int                      @default(0)
+  durationMs            BigInt                   @default(0)
+  actorId               String?
+  note                  String?
+  createdAt             DateTime                 @default(now())
+
+  @@index([incidentId, createdAt])
+  @@index([createdAt])
+}
+
+model HealthIncidentAcknowledgement {
+  id                    String                   @id @default(cuid())
+  incidentId            String                   @unique
+  incident              HealthIncident           @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  acknowledgedBy        String
+  note                  String
+  expiresAt             DateTime
+  createdAt             DateTime                 @default(now())
+
+  @@index([acknowledgedBy, createdAt])
+  @@index([expiresAt])
+}
+
+model HealthIncident {
+  id                           String                           @id @default(cuid())
+  dependencyName               String                           @unique
+  status                       HealthIncidentStatus             @default(HEALTHY)
+  reasonCode                   HealthIncidentReasonCode?
+  configVersion                Int                              @default(1)
+  failureThreshold             Int                              @default(3)
+  recoveryThreshold            Int                              @default(5)
+  failureWindowMs              BigInt                           @default(60000)
+  recoveryWindowMs             BigInt                           @default(120000)
+  openedAt                     DateTime?
+  acknowledgedAt               DateTime?
+  closedAt                     DateTime?
+  currentProbeCount            Int                              @default(0)
+  probeCountWindowStart        DateTime?
+  totalFailedProbes            Int                              @default(0)
+  totalSuccessfulProbes        Int                              @default(0)
+  version                      Int                              @default(0)
+  createdAt                    DateTime                         @default(now())
+  updatedAt                    DateTime                         @updatedAt
+  transitions                  HealthTransition[]
+  acknowledgement              HealthIncidentAcknowledgement?
+
+  @@index([status])
+  @@index([openedAt])
+  @@index([closedAt])
+  @@index([updatedAt])
+}
+
+/// Bounded offline verification bundles.
+/// A bundle is a time-limited, signed package containing authorized disclosures,
+/// verification keys, and revocation checkpoints enabling offline proof verification.
+///
+/// Design:
+/// - immutable after issuance (update not supported)
+/// - bundleId is user-facing, unique per organization
+/// - scope JSON encodes proofIds, operations, and permissions
+/// - contentsHash (SHA-256 of contents) bound to manifest via signature
+/// - signature covers the entire manifest (HMAC-SHA256, versioned for key rotation)
+/// - issuedAt/expiresAt define validity window; maxFreshnessSeconds bounds checkpoint age
+/// - @@unique([organizationId, bundleId]) enforces idempotency for deterministic generation
+/// - revokedAt/revocationReason for future revocation support (bundles inherit revocation from included proofs)
+model OfflineBundle {
+  id                    String   @id @default(cuid())
+  /// User-facing bundle identifier (e.g., "obb_abc123def456")
+  bundleId              String
+  organizationId        String
+  /// API key ID that requested this bundle (audit trail)
+  requestingApiKeyId    String?
+  /// Bundle format version (e.g., "earnproof.offline-bundle.v1")
+  version               String   @default("earnproof.offline-bundle.v1")
+  /// JSON: { proofIds, operations, organizationId }
+  scope                 Json
+  /// HMAC signature version identifier (e.g., "v1")
+  signatureVersion      String
+  /// Manifest signature (HMAC-SHA256, versioned, "hmac-sha256:v1=..." format)
+  signature             String
+  /// SHA-256 hash of contents object ("sha256:..." format, hex-encoded)
+  contentsHash          String
+  /// JSON contents: { credentials, verificationKeys, checkpoints }
+  contents              Json
+  /// ISO-8601 UTC timestamp when bundle was created
+  issuedAt              DateTime
+  /// ISO-8601 UTC timestamp when bundle expires (inclusive boundary: now >= expiresAt => expired)
+  expiresAt             DateTime
+  /// Maximum age in seconds for included checkpoints to be treated as current
+  maxFreshnessSeconds   Int
+  /// Optional revocation: if proof is revoked, inherited revocation timestamp
+  revokedAt             DateTime?
+  /// Optional revocation reason (if any included proof was revoked)
+  revocationReason      String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  // Idempotency: bundleId unique per organization enables same request to return same bundle
+  @@unique([organizationId, bundleId], name: "offline_bundle_idempotency")
+  // Query indexes for common operations
+  @@index([organizationId, expiresAt])
+  @@index([organizationId, createdAt])
+  @@index([expiresAt])
 }

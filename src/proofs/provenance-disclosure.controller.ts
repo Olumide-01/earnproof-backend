@@ -17,15 +17,16 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import {
-  ApiBearerTokenAuth,
+  ApiBearerAuth,
   ApiOkResponse,
   ApiOperation,
   ApiParam,
   ApiQuery,
   ApiTags,
 } from "@nestjs/swagger";
-import { AuthGuard } from "../auth/auth.guard";
-import { AuthenticatedUser, CurrentUser } from "../auth/auth.types";
+import { AuthGuard } from "../common/guards/auth.guard";
+import { AuthenticatedUser } from "../auth/auth.types";
+import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { VerificationProvenanceService } from "./verification-provenance.service";
 import {
   VerificationProvenanceDto,
@@ -49,7 +50,7 @@ class GetProvenanceSourcesQueryDto {
 @Controller("api/v1/proofs/:proofId/provenance")
 @ApiTags("Proofs - Provenance Disclosure")
 @UseGuards(AuthGuard)
-@ApiBearerTokenAuth()
+@ApiBearerAuth()
 export class ProvenanceDisclosureController {
   constructor(private readonly provenanceService: VerificationProvenanceService) {}
 

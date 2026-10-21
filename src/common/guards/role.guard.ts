@@ -25,7 +25,13 @@ export class RoleGuard implements CanActivate {
       return true;
     }
 
-    if (user.role !== requiredRole) {
+    if (Array.isArray(requiredRole)) {
+      if (!requiredRole.includes(user.role)) {
+        throw new ForbiddenException(
+          `This action requires one of [${requiredRole.join(", ")}] roles`,
+        );
+      }
+    } else if (user.role !== requiredRole) {
       throw new ForbiddenException(
         `This action requires ${requiredRole} role access`,
       );
