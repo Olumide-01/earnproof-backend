@@ -12,7 +12,11 @@ import {
   ForbiddenException,
   BadRequestException,
   ConflictException,
+  NotFoundException,
+  Optional,
+  Req,
 } from "@nestjs/common";
+import { Request } from "express";
 import {
   ApiBearerAuth,
   ApiExcludeEndpoint,
@@ -44,6 +48,12 @@ import {
   SetApiKeyQuotasDto,
 } from "./dto/api-key-quota.dto";
 import { ApiKeyQuotaService } from "./api-key-quota.service";
+import { ApiKeyRotationService } from "./api-key-rotation.service";
+import {
+  CutoverApiKeyDto,
+  RevokeApiKeyDto,
+  RotateApiKeyDto,
+} from "./dto/rotate-api-key.dto";
 
 /**
  * API Keys Controller - Machine-to-machine integration credential management.
@@ -71,23 +81,51 @@ import { ApiKeyQuotaService } from "./api-key-quota.service";
 @UseGuards(AuthGuard)
 @Controller("api-keys")
 export class ApiKeysController {
+  private readonly apiKeyQuotaService: ApiKeyQuotaService;
+  private readonly recentAuthService: RecentAuthService;
+  private readonly prisma: PrismaService;
+  private readonly apiKeyRotationService?: ApiKeyRotationService;
+
   constructor(
     private readonly apiKeyService: ApiKeyService,
     private readonly apiKeyUsageService: ApiKeyUsageService,
-    private readonly recentAuthService: RecentAuthService,
-    private readonly prisma: PrismaService,
-    private readonly apiKeyQuotaService: ApiKeyQuotaService = {
-      getKeyQuotas: async () => [],
-      setQuotaConfig: async () => undefined,
-      getQuotaConfig: async () => ({
-        quotaLimit: null,
-        windowSeconds: 3600,
-        isUnlimited: true,
-        isDisabled: false,
-      }),
-      deleteKeyQuotas: async () => undefined,
-    } as never,
-  ) {}
+    @Optional() quotaOrRecentAuth?: ApiKeyQuotaService | RecentAuthService,
+    @Optional() recentAuthOrPrisma?: RecentAuthService | PrismaService,
+    @Optional() prisma?: PrismaService,
+    @Optional() apiKeyRotationService?: ApiKeyRotationService,
+  ) {
+    if (quotaOrRecentAuth && typeof (quotaOrRecentAuth as any).consume === "function") {
+      this.recentAuthService = quotaOrRecentAuth as RecentAuthService;
+      this.prisma = recentAuthOrPrisma as PrismaService;
+      this.apiKeyQuotaService = {
+        getKeyQuotas: async () => [],
+        setQuotaConfig: async () => undefined,
+        getQuotaConfig: async () => ({
+          quotaLimit: null,
+          windowSeconds: 3600,
+          isUnlimited: true,
+          isDisabled: false,
+        }),
+        deleteKeyQuotas: async () => undefined,
+      } as never;
+      this.apiKeyRotationService = (apiKeyRotationService ?? prisma) as unknown as ApiKeyRotationService;
+    } else {
+      this.apiKeyQuotaService = (quotaOrRecentAuth as ApiKeyQuotaService) ?? ({
+        getKeyQuotas: async () => [],
+        setQuotaConfig: async () => undefined,
+        getQuotaConfig: async () => ({
+          quotaLimit: null,
+          windowSeconds: 3600,
+          isUnlimited: true,
+          isDisabled: false,
+        }),
+        deleteKeyQuotas: async () => undefined,
+      } as never);
+      this.recentAuthService = recentAuthOrPrisma as RecentAuthService;
+      this.prisma = prisma as PrismaService;
+      this.apiKeyRotationService = apiKeyRotationService;
+    }
+  }
 
   /**
    * Create a new API key for an organization.
@@ -321,6 +359,7 @@ export class ApiKeysController {
     @CurrentUser() user: AuthenticatedUser,
     @Param("id") keyId: string,
     @Query() query: OrganizationApiKeysQueryDto = {},
+    @Body() body?: RotateApiKeyDto,
   ) {
     // Authorization: User must be organization admin
     const organizationId = await this.getAuthorizedOrganizationId(
@@ -335,16 +374,15 @@ export class ApiKeysController {
 
     // Verify the key belongs to this organization (enforced by service)
     try {
-      const result = await this.apiKeyService.rotateKey(
-        keyId,
-        organizationId,
-        user.id, // Pass actor for audit logging
-      );
+      const result = body
+        ? await this.apiKeyService.rotateKey(keyId, organizationId, user.id, body)
+        : await this.apiKeyService.rotateKey(keyId, organizationId, user.id);
 
       // Important: return includes the new raw secret exactly once
       return {
         secret: result.secret,
         apiKey: result.apiKey,
+        rotationId: result.rotationId,
       };
     } catch (error) {
       if (
@@ -357,6 +395,106 @@ export class ApiKeysController {
       }
       throw error;
     }
+  }
+
+  /**
+   * Inspect an API key rotation family and overlap status.
+   * Requires recent authentication assertion.
+   */
+  @Get(":id/rotation")
+  @UseGuards(RecentAuthGuard)
+  @RequireRecentAuth(DESTRUCTIVE_ACTIONS.KEY_INSPECT)
+  @ApiOperation({
+    summary: "Inspect an API key rotation family",
+    description:
+      "Inspect the active rotation status, overlap deadlines, and old-key usage for an API key family.",
+  })
+  @ApiParam({
+    name: "id",
+    description: "API key ID to inspect rotation status for.",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "Rotation family status retrieved successfully",
+  })
+  async inspectRotation(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") keyId: string,
+    @Query() query: OrganizationApiKeysQueryDto = {},
+  ) {
+    const organizationId = await this.getAuthorizedOrganizationId(
+      user,
+      query.organizationId,
+    );
+    if (!organizationId) {
+      throw new ForbiddenException(
+        "Only organization admins can inspect API key rotation status.",
+      );
+    }
+
+    if (!this.apiKeyRotationService) {
+      throw new NotFoundException("Rotation service not configured");
+    }
+
+    return this.apiKeyRotationService.inspectRotation(keyId, organizationId);
+  }
+
+  /**
+   * Perform early cutover for an API key rotation, terminating the overlap period immediately.
+   * Requires recent authentication assertion.
+   */
+  @Post(":id/cutover")
+  @UseGuards(RecentAuthGuard)
+  @RequireRecentAuth(DESTRUCTIVE_ACTIONS.KEY_CUTOVER)
+  @ApiOperation({
+    summary: "Perform early cutover for an API key rotation",
+    description:
+      "Immediately end the overlap period for an API key rotation and produce an immutable cutover receipt.",
+  })
+  @ApiParam({
+    name: "id",
+    description: "API key ID to cut over.",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "API key rotation successfully cut over",
+  })
+  async earlyCutover(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") keyId: string,
+    @Query() query: OrganizationApiKeysQueryDto = {},
+    @Req() req?: Request,
+    @Body() body?: CutoverApiKeyDto,
+  ) {
+    void body;
+    const organizationId = await this.getAuthorizedOrganizationId(
+      user,
+      query.organizationId,
+    );
+    if (!organizationId) {
+      throw new ForbiddenException(
+        "Only organization admins can execute API key cutover.",
+      );
+    }
+
+    if (req) {
+      const assertionToken = String(req.headers?.["x-recent-auth"] ?? "");
+      const origin = String(req.headers?.["origin"] ?? "null");
+      if (assertionToken) {
+        await this.recentAuthService.consume({
+          token: assertionToken,
+          action: DESTRUCTIVE_ACTIONS.KEY_CUTOVER,
+          resourceId: keyId,
+          origin,
+        });
+      }
+    }
+
+    if (!this.apiKeyRotationService) {
+      throw new NotFoundException("Rotation service not configured");
+    }
+
+    return this.apiKeyRotationService.earlyCutover(keyId, organizationId, user.id);
   }
 
   /**
@@ -400,8 +538,12 @@ export class ApiKeysController {
     @CurrentUser() user: AuthenticatedUser,
     @Param("id") keyId: string,
     @Query() query: OrganizationApiKeysQueryDto = {},
+    @Req() req?: Request,
+    @Body() body?: RevokeApiKeyDto,
   ) {
-    await this.revokeAuthorizedKey(user, keyId, query);
+    const assertionToken = req ? String(req.headers?.["x-recent-auth"] ?? "") : undefined;
+    const origin = req ? String(req.headers?.["origin"] ?? "null") : undefined;
+    await this.revokeAuthorizedKey(user, keyId, query, assertionToken, origin, body?.reason);
   }
 
   @Delete(":id/revoke")
@@ -411,8 +553,12 @@ export class ApiKeysController {
     @CurrentUser() user: AuthenticatedUser,
     @Param("id") keyId: string,
     @Query() query: OrganizationApiKeysQueryDto = {},
+    @Req() req?: Request,
+    @Body() body?: RevokeApiKeyDto,
   ) {
-    await this.revokeAuthorizedKey(user, keyId, query);
+    const assertionToken = req ? String(req.headers?.["x-recent-auth"] ?? "") : undefined;
+    const origin = req ? String(req.headers?.["origin"] ?? "null") : undefined;
+    await this.revokeAuthorizedKey(user, keyId, query, assertionToken, origin, body?.reason);
   }
 
   private async revokeAuthorizedKey(
@@ -421,6 +567,7 @@ export class ApiKeysController {
     query: OrganizationApiKeysQueryDto,
     assertionToken?: string,
     origin?: string,
+    reason?: string,
   ) {
     // Consume the recent-auth assertion (single-use) if provided.
     if (assertionToken) {
@@ -445,11 +592,20 @@ export class ApiKeysController {
 
     // Verify the key belongs to this organization (enforced by service)
     try {
-      await this.apiKeyService.revokeKey(
-        keyId,
-        organizationId,
-        user.id, // Pass actor for audit logging
-      );
+      if (reason) {
+        await this.apiKeyService.revokeKey(
+          keyId,
+          organizationId,
+          user.id, // Pass actor for audit logging
+          { reason },
+        );
+      } else {
+        await this.apiKeyService.revokeKey(
+          keyId,
+          organizationId,
+          user.id, // Pass actor for audit logging
+        );
+      }
     } catch (error) {
       if (error instanceof Error && error.message.includes("Key not found")) {
         throw new ForbiddenException("API key not found");

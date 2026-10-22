@@ -1,4 +1,4 @@
-import { ApiKeyScope, ResourceStatus } from "@prisma/client";
+import { ApiKeyRotationStatus, ApiKeyScope, ResourceStatus } from "@prisma/client";
 import { ApiKeyService } from "./api-key.service";
 import { unlimitedQuotas } from "../testing/quotas";
 
@@ -1329,6 +1329,53 @@ describe("ApiKeyService", () => {
         // The new expiresAt for the rotated key must be capped at originalExpiresAt
         expect(result.apiKey.expiresAt?.toISOString()).toBe("2026-10-20T12:15:00.000Z");
       });
+
+      it("rejects concurrent rotation requests when rotation is already IN_OVERLAP", async () => {
+        const keyId = "key_in_overlap";
+        prismaService.apiKey.findUnique.mockResolvedValueOnce({
+          id: keyId,
+          organizationId: "org_1",
+          status: ResourceStatus.ACTIVE,
+        });
+
+        prismaService.apiKeyRotation = {
+          findMany: jest.fn().mockResolvedValueOnce([
+            {
+              id: "rot_active",
+              oldKeyId: keyId,
+              status: ApiKeyRotationStatus.IN_OVERLAP,
+            },
+          ]),
+        };
+
+        await expect(
+          service.rotateKey(keyId, "org_1", "user_1"),
+        ).rejects.toThrow("Key already has an active rotation in progress");
+      });
+
+      it("expired overlap cannot be extended by replaying rotation requests", async () => {
+        const keyId = "key_expired_rotation";
+        prismaService.apiKey.findUnique.mockResolvedValueOnce({
+          id: keyId,
+          organizationId: "org_1",
+          status: ResourceStatus.ACTIVE,
+        });
+
+        prismaService.apiKeyRotation = {
+          findMany: jest.fn().mockResolvedValueOnce([
+            {
+              id: "rot_expired",
+              oldKeyId: keyId,
+              status: ApiKeyRotationStatus.EXPIRED,
+            },
+          ]),
+        };
+
+        await expect(
+          service.rotateKey(keyId, "org_1", "user_1"),
+        ).rejects.toThrow("Cannot rotate an API key that has already been rotated");
+      });
     });
   });
 });
+
