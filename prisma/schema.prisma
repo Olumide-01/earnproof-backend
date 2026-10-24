@@ -353,6 +353,10 @@ model User {
   declarationsApproved    PurposeDeclaration[]  @relation("declaration_approvedBy")
   declarationsRevoked     PurposeDeclaration[]  @relation("declaration_revokedBy")
   auditEntries            DeclarationAuditEntry[]
+  sentInvitations         OrganizationInvitation[] @relation("organizationInvitationsSent")
+  acceptedInvitations     OrganizationInvitation[] @relation("organizationInvitationsAccepted")
+  declinedInvitations     OrganizationInvitation[] @relation("organizationInvitationsDeclined")
+  revokedInvitations      OrganizationInvitation[] @relation("organizationInvitationsRevoked")
 
   @@index([walletHash])
   @@index([status])
@@ -502,6 +506,7 @@ model Organization {
   invitationDeliveryAuditEvents    InvitationDeliveryAuditEvent[]
   apiKeyRotations                  ApiKeyRotation[]
   apiKeyCutoverReceipts            ApiKeyCutoverReceipt[]
+  invitations                      OrganizationInvitation[]
 
   @@index([status])
   @@index([archivedAt])
@@ -524,6 +529,45 @@ model OrganizationMember {
   @@index([organizationId])
   @@index([userId])
   @@index([status])
+}
+
+enum OrganizationInvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  REVOKED
+  EXPIRED
+}
+
+model OrganizationInvitation {
+  id                     String                       @id @default(cuid())
+  organizationId         String
+  organization           Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role                   OrganizationMemberRole
+  inviterId              String
+  inviter                User                         @relation("organizationInvitationsSent", fields: [inviterId], references: [id], onDelete: Restrict)
+  recipientWalletAddress String
+  recipientWalletHash    String
+  secretHash             String                       @unique
+  status                 OrganizationInvitationStatus @default(PENDING)
+  expiresAt              DateTime
+  acceptedAt             DateTime?
+  acceptedById           String?
+  acceptedBy             User?                        @relation("organizationInvitationsAccepted", fields: [acceptedById], references: [id], onDelete: SetNull)
+  declinedAt             DateTime?
+  declinedById           String?
+  declinedBy             User?                        @relation("organizationInvitationsDeclined", fields: [declinedById], references: [id], onDelete: SetNull)
+  revokedAt              DateTime?
+  revokedById            String?
+  revokedBy              User?                        @relation("organizationInvitationsRevoked", fields: [revokedById], references: [id], onDelete: SetNull)
+  createdAt              DateTime                     @default(now())
+  updatedAt              DateTime                     @updatedAt
+
+  @@index([organizationId, status])
+  @@index([recipientWalletAddress, status])
+  @@index([recipientWalletHash, status])
+  @@index([expiresAt])
+  @@index([organizationId, recipientWalletAddress])
 }
 
 /// Stores idempotency records to prevent duplicate mutations within an organization.
