@@ -35,6 +35,8 @@ user or organization is answered as `404`, identical to an absent resource.
 | `GET /organizations/:id/webhooks/tls-posture`, `GET .../:webhookId/tls-posture` | bearer ACTIVE member or ADMIN | webhook in path organization, else 404 | 401/403/404 |
 | `POST /organizations/:id/webhooks/:webhookId/tls-posture/probe` | bearer organization ADMIN/OWNER or ADMIN | webhook in path organization, else 404; 60 s cooldown | 401/403/404/409/429 |
 | `GET/POST /admin/audit-legal-holds*` | bearer `ADMIN` | global admin; every decision needs a second administrator | 400/401/403/404/409 |
+| `POST/GET /organizations/:organizationId/invitations*`, `DELETE/POST .../:invitationId/revoke` | bearer organization ADMIN/OWNER or platform ADMIN | path organization | 400/401/403/404/409 |
+| `POST/GET /invitations/inspect`, `POST /invitations/accept`, `POST /invitations/decline` | public inspect; bearer session matching bound recipient wallet for accept/decline | single-use capability token bound to tenant and recipient wallet | 400/401/403/404/409 |
 
 Account status transitions are `PENDING→ACTIVE|SUSPENDED|REVOKED`,
 `ACTIVE→SUSPENDED|REVOKED` and `SUSPENDED→ACTIVE|REVOKED`; `REVOKED` is
