@@ -1,4 +1,4 @@
-﻿import { BadRequestException, ForbiddenException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException } from "@nestjs/common";
 import { ApiKeyScope } from "@prisma/client";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { ApiKeysController } from "./api-keys.controller";
@@ -389,6 +389,79 @@ describe("ApiKeysController - Authorization", () => {
       expect(apiKeyService.listKeysForOrganization).not.toHaveBeenCalled();
       expect(apiKeyService.rotateKey).not.toHaveBeenCalled();
       expect(apiKeyService.revokeKey).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("inspectRotation & earlyCutover", () => {
+    let mockRotationService: any;
+    let mockRecentAuth: any;
+
+    beforeEach(() => {
+      mockRotationService = {
+        inspectRotation: jest.fn().mockResolvedValue({ familyId: "fam_1", status: "IN_OVERLAP" }),
+        earlyCutover: jest.fn().mockResolvedValue({
+          rotation: { familyId: "fam_1", status: "CUTOVER" },
+          cutoverReceipt: { id: "rec_1", receiptHash: "sha256:123" },
+        }),
+      };
+      mockRecentAuth = {
+        consume: jest.fn().mockResolvedValue({ userId: adminUser.id }),
+      };
+      controller = new ApiKeysController(
+        apiKeyService as never,
+        {} as never,
+        {} as never,
+        mockRecentAuth as never,
+        prismaService as never,
+        mockRotationService as never,
+      );
+    });
+
+    it("allows authorized admin to inspect rotation", async () => {
+      allowSingleOrganization();
+      const res = await controller.inspectRotation(adminUser, "key_1");
+      expect(res.familyId).toBe("fam_1");
+      expect(mockRotationService.inspectRotation).toHaveBeenCalledWith("key_1", organizationId);
+    });
+
+    it("rejects unauthorized user from inspecting rotation", async () => {
+      denyOrganizations();
+      await expect(controller.inspectRotation(outsiderUser, "key_1")).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(mockRotationService.inspectRotation).not.toHaveBeenCalled();
+    });
+
+    it("allows authorized admin to execute early cutover and consumes recent-auth token", async () => {
+      allowSingleOrganization();
+      const mockReq = {
+        headers: {
+          "x-recent-auth": "assert_tok_123",
+          origin: "https://dashboard.earnproof.com",
+        },
+      } as any;
+
+      const res = await controller.earlyCutover(adminUser, "key_1", {}, mockReq);
+      expect(res.rotation.status).toBe("CUTOVER");
+      expect(mockRecentAuth.consume).toHaveBeenCalledWith({
+        token: "assert_tok_123",
+        action: "key:cutover",
+        resourceId: "key_1",
+        origin: "https://dashboard.earnproof.com",
+      });
+      expect(mockRotationService.earlyCutover).toHaveBeenCalledWith(
+        "key_1",
+        organizationId,
+        adminUser.id,
+      );
+    });
+
+    it("rejects unauthorized user from early cutover", async () => {
+      denyOrganizations();
+      await expect(controller.earlyCutover(outsiderUser, "key_1")).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(mockRotationService.earlyCutover).not.toHaveBeenCalled();
     });
   });
 });

@@ -472,7 +472,24 @@ export const AUDIT_EVENTS: readonly AuditEventDefinition[] = [
     writeFailure: "fail_closed",
     requiredMetadata: ["prefix", "organizationId"],
     description:
-      "A machine credential's secret was replaced; the old secret stopped working immediately.",
+      "A machine credential was rotated with an overlap window or immediate cutover.",
+  },
+  {
+    type: "api_key.cutover",
+    domain: "api_key",
+    store: "audit_log",
+    match: {
+      store: "audit_log",
+      action: "api_key.cutover",
+      resourceType: "api_key",
+    },
+    actorTypes: ["user", "system"],
+    outcomes: ["success"],
+    tenant: "metadata_organization_id",
+    writeFailure: "fail_closed",
+    requiredMetadata: ["prefix", "organizationId", "familyId", "receiptId"],
+    description:
+      "An API key rotation overlap window was cut over; the old key was retired.",
   },
   {
     type: "api_key.revoked",

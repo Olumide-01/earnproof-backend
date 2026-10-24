@@ -1,4 +1,4 @@
-﻿import { Injectable, Logger, UnauthorizedException } from "@nestjs/common";
+import { Injectable, Logger, UnauthorizedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { PrismaService } from "../database/prisma.service";
@@ -14,6 +14,8 @@ export const DESTRUCTIVE_ACTIONS = {
   ISSUER_REVOKE:  "issuer:revoke",
   KEY_REVOKE:     "key:revoke",
   SESSION_REVOKE_ALL: "session:revoke_all",
+  KEY_CUTOVER:    "key:cutover",
+  KEY_INSPECT:    "key:inspect",
 } as const;
 
 export type DestructiveAction = (typeof DESTRUCTIVE_ACTIONS)[keyof typeof DESTRUCTIVE_ACTIONS];

@@ -504,6 +504,8 @@ model Organization {
   invitationDeliveryQuota          InvitationDeliveryQuota?
   invitationDeliveryOverrides      InvitationDeliveryOverride[]
   invitationDeliveryAuditEvents    InvitationDeliveryAuditEvent[]
+  apiKeyRotations                  ApiKeyRotation[]
+  apiKeyCutoverReceipts            ApiKeyCutoverReceipt[]
   invitations                      OrganizationInvitation[]
 
   @@index([status])
@@ -1250,11 +1252,18 @@ model ApiKey {
   expiresAt        DateTime?
   createdAt        DateTime                @default(now())
   usageSummaries   ApiKeyUsageSummary[]
+  rotationFamilyId String?
+  overlapExpiresAt DateTime?
+  oldKeyRotations  ApiKeyRotation[]        @relation("OldKeyRotations")
+  newKeyRotations  ApiKeyRotation[]        @relation("NewKeyRotations")
 
   @@index([organizationId, status])
   @@index([prefix])
   @@index([organizationId, createdAt, id])
   @@index([status, expiresAt])
+  @@index([organizationId, rotationFamilyId])
+  @@index([rotationFamilyId])
+  @@index([overlapExpiresAt])
 }
 
 model ApiKeyScopeAssignment {
@@ -1290,6 +1299,61 @@ model SecretRetrievalReceipt {
   @@index([organizationId, secretType, resourceId])
   @@index([organizationId, status, expiresAt])
   @@index([organizationId, createdAt])
+}
+
+enum ApiKeyRotationStatus {
+  IN_OVERLAP
+  CUTOVER
+  EXPIRED
+  REVOKED
+}
+
+model ApiKeyRotation {
+  id               String                @id @default(cuid())
+  organizationId   String
+  organization     Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  familyId         String
+  oldKeyId         String
+  oldKey           ApiKey                @relation("OldKeyRotations", fields: [oldKeyId], references: [id], onDelete: Cascade)
+  newKeyId         String
+  newKey           ApiKey                @relation("NewKeyRotations", fields: [newKeyId], references: [id], onDelete: Cascade)
+  overlapExpiresAt DateTime
+  cutoverAt        DateTime?
+  cutoverById      String?
+  status           ApiKeyRotationStatus  @default(IN_OVERLAP)
+  oldKeyUsageCount Int                   @default(0)
+  lastOldKeyUsedAt DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  cutoverReceipt   ApiKeyCutoverReceipt?
+
+  @@unique([oldKeyId, newKeyId])
+  @@index([organizationId, familyId])
+  @@index([organizationId, status])
+  @@index([oldKeyId, status])
+  @@index([newKeyId, status])
+  @@index([overlapExpiresAt])
+}
+
+model ApiKeyCutoverReceipt {
+  id               String         @id @default(cuid())
+  organizationId   String
+  organization     Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  rotationId       String         @unique
+  rotation         ApiKeyRotation @relation(fields: [rotationId], references: [id], onDelete: Cascade)
+  familyId         String
+  oldKeyId         String
+  newKeyId         String
+  cutoverAt        DateTime
+  cutoverType      String // "EARLY_MANUAL" | "EXPIRED_DEADLINE" | "REVOCATION_CUTOVER"
+  initiatedById    String?
+  oldKeyUsageCount Int            @default(0)
+  receiptHash      String         @unique
+  receiptData      Json
+  createdAt        DateTime       @default(now())
+
+  @@index([organizationId, familyId])
+  @@index([receiptHash])
 }
 
 enum WebhookSecretState {

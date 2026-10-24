@@ -55,6 +55,7 @@ and continues.
 | `anchoring_intent.abandoned` | proof | `audit_log` | user | success | resource | fail_closed |
 | `api_key.created` | api_key | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
 | `api_key.rotated` | api_key | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
+| `api_key.cutover` | api_key | `audit_log` | user, system | success | `metadata.organizationId` | fail_closed |
 | `api_key.revoked` | api_key | `audit_log` | user | success | `metadata.organizationId` | fail_closed |
 | `webhook.delivery_replayed` | webhook | `audit_log` | user | success | actor | fail_closed |
 | `operator.organization_created` | operator | `audit_log` | user | success | resource | fail_closed |
